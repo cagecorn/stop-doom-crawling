@@ -361,6 +361,9 @@ export class Game {
                 image: assets.monster,
             });
             this.monsterManager.addMonster(monster);
+            if (this.mapManager.name === 'aquarium') {
+                this.equipMonsterForAquarium(monster);
+            }
             monsterSquad.push(monster);
         }
         const monsterEntityMap = {};
@@ -1709,6 +1712,38 @@ export class Game {
             this.gameState.player.stats.allocatePoint(stat);
             this.gameState.player.stats.recalculate();
         }
+    }
+
+    equipMonsterForAquarium(monster) {
+        const size = this.mapManager.tileSize;
+        const { itemFactory, equipmentManager } = this;
+        const weaponIds = ['short_sword', 'long_bow', 'estoc', 'axe', 'mace', 'staff', 'spear', 'scythe', 'whip', 'dagger', 'violin_bow'];
+        const armorIds = ['leather_armor', 'plate_armor'];
+        const consumableIds = ['potion', 'strength_elixir', 'shock_grenade'];
+
+        const weaponId = weaponIds[Math.floor(Math.random() * weaponIds.length)];
+        const weapon = itemFactory.create(weaponId, 0, 0, size);
+        if (weapon) equipmentManager.equip(monster, weapon, null);
+
+        if (weapon && weapon.tags?.includes('melee') && !weapon.tags.includes('ranged') && Math.random() < 0.5) {
+            const shield = itemFactory.create('shield_basic', 0, 0, size);
+            if (shield) equipmentManager.equip(monster, shield, null);
+        }
+
+        const helm = itemFactory.create('iron_helmet', 0, 0, size);
+        const gloves = itemFactory.create('iron_gauntlets', 0, 0, size);
+        const boots = itemFactory.create('iron_boots', 0, 0, size);
+        const armorId = armorIds[Math.floor(Math.random() * armorIds.length)];
+        const armor = itemFactory.create(armorId, 0, 0, size);
+
+        if (helm) equipmentManager.equip(monster, helm, null);
+        if (gloves) equipmentManager.equip(monster, gloves, null);
+        if (boots) equipmentManager.equip(monster, boots, null);
+        if (armor) equipmentManager.equip(monster, armor, null);
+
+        const consumableId = consumableIds[Math.floor(Math.random() * consumableIds.length)];
+        const consumable = itemFactory.create(consumableId, 0, 0, size);
+        if (consumable) monster.addConsumable(consumable);
     }
 
     setState(newState) {
