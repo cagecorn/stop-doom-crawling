@@ -56,6 +56,7 @@ import { LaneRenderManager } from './managers/laneRenderManager.js';
 import { LanePusherAI } from './ai/archetypes.js';
 import { LaneAssignmentManager } from './managers/laneAssignmentManager.js';
 import { FormationManager } from './managers/formationManager.js';
+import { UnitPlacementView } from './UnitPlacementView.js';
 
 export class Game {
     constructor() {
