@@ -224,6 +224,7 @@ export class Game {
         this.speechBubbleManager = this.managers.SpeechBubbleManager;
         this.equipmentRenderManager = this.managers.EquipmentRenderManager;
         this.mercenaryManager.equipmentRenderManager = this.equipmentRenderManager;
+        this.monsterManager.equipmentRenderManager = this.equipmentRenderManager;
         this.traitManager = this.managers.TraitManager;
         this.mercenaryManager.setTraitManager(this.traitManager);
         this.monsterManager.setTraitManager(this.traitManager);
