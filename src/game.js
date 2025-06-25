@@ -142,7 +142,7 @@ export class Game {
         const laneCenters = this.mapManager.getLaneCenters ? this.mapManager.getLaneCenters() : null;
         this.laneManager = new LaneManager(mapPixelWidth, mapPixelHeight, laneCenters);
         this.laneRenderManager = new LaneRenderManager(this.laneManager, SETTINGS.ENABLE_AQUARIUM_LANES);
-        const formationSpacing = this.mapManager.tileSize * 2.5;
+        const formationSpacing = this.mapManager.tileSize;
         this.formationManager = new FormationManager(5, 5, formationSpacing, this.eventManager);
         this.eventManager.subscribe('formation_assign_request', d => {
             this.formationManager.assign(d.slotIndex, d.entityId);
