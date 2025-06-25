@@ -3,11 +3,38 @@ class FormationManager {
         this.cols = Number.isFinite(cols) && cols > 0 ? Math.floor(cols) : 1;
         this.rows = Number.isFinite(rows) && rows > 0 ? Math.floor(rows) : 1;
         this.tileSize = Number.isFinite(tileSize) && tileSize > 0 ? tileSize : 1;
+        this.spacing = this.tileSize;
         this.orientation = orientation;
         // 각 슬롯에는 분대(squad) 객체가 저장됨
         this.slots = new Array(this.cols * this.rows).fill(null);
+        this.slotCoords = [];
+        this.x = 0;
+        this.y = 0;
         this.eventManager = eventManager && typeof eventManager.subscribe === 'function' ? eventManager : null;
         this.eventManager?.subscribe('formation_assign_request', this.handleAssignSquad.bind(this));
+        this.initSlots();
+    }
+
+    initSlots() {
+        this.slotCoords = [];
+        const formationWidth = (this.cols - 1) * this.spacing;
+        const formationHeight = (this.rows - 1) * this.spacing;
+        const startX = this.x - formationWidth / 2;
+        const startY = this.y - formationHeight / 2;
+
+        for (let r = 0; r < this.rows; r++) {
+            for (let c = 0; c < this.cols; c++) {
+                const x = startX + c * this.spacing;
+                const y = startY + r * this.spacing;
+                this.slotCoords.push({ x, y, row: r, col: c });
+            }
+        }
+    }
+
+    setPosition(x, y) {
+        this.x = x;
+        this.y = y;
+        this.initSlots();
     }
     
     handleAssignSquad({ squadId, slotIndex }) {
@@ -33,6 +60,10 @@ class FormationManager {
     }
 
     getSlotPosition(index) {
+        if (this.slotCoords && this.slotCoords[index]) {
+            const { x, y } = this.slotCoords[index];
+            return { x, y };
+        }
         const x = (index % this.cols) * this.tileSize;
         const y = Math.floor(index / this.cols) * this.tileSize;
         return { x, y };

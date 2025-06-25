@@ -144,6 +144,16 @@ export class Game {
         this.laneRenderManager = new LaneRenderManager(this.laneManager, SETTINGS.ENABLE_AQUARIUM_LANES);
         const formationSpacing = this.mapManager.tileSize;
         this.formationManager = new FormationManager(5, 5, formationSpacing, this.eventManager);
+
+        // 1. 부대 진형의 위치를 먼저 설정합니다.
+        const startX = this.mapManager.tileSize * 3; // 왼쪽 여백을 조금 더 주었습니다.
+        const centerY = mapPixelHeight / 2;
+        this.formationManager.setPosition(startX, centerY);
+
+        // 2. 위치가 설정된 진형 정보를 바탕으로 UI와 부대를 생성합니다.
+        this.unitPlacementView = new UnitPlacementView(this.formationManager, this.eventManager);
+        this.squad = new Squad(this.formationManager, this.eventManager);
+
         this.eventManager.subscribe('formation_assign_request', d => {
             this.formationManager.assign(d.slotIndex, d.entityId);
             this.uiManager?.createSquadManagementUI();
