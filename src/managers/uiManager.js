@@ -54,6 +54,8 @@ export class UIManager {
         this.tooltip = document.getElementById('tooltip');
         this.characterSheetTemplate = document.getElementById('character-sheet-template');
         this.uiContainer = document.getElementById('ui-container');
+        this.squadManagementUI = document.getElementById('squad-management');
+        this.formationGridUI = document.getElementById('formation-grid');
         this.callbacks = {};
         this._lastInventory = [];
         this._lastConsumables = [];
@@ -979,35 +981,7 @@ export class UIManager {
             parent.appendChild(el);
         });
 
-        const grid = document.getElementById('formation-grid');
-        if (grid && this.formationManager) {
-            grid.innerHTML = '';
-
-            const rows = this.formationManager.rows;
-            const cols = this.formationManager.cols;
-            const orientLeft = this.formationManager.orientation === 'LEFT';
-
-            for (let r = 0; r < rows; r++) {
-                for (let c = 0; c < cols; c++) {
-                    const idx = orientLeft
-                        ? (cols - 1 - c) * rows + r
-                        : c * rows + r;
-                    const id = this.formationManager.slots[idx];
-
-                    const cell = document.createElement('div');
-                    cell.className = 'formation-cell';
-                    cell.dataset.index = idx;
-                    cell.textContent = id ? id : idx + 1;
-                    cell.addEventListener('dragover', e => e.preventDefault());
-                    cell.addEventListener('drop', e => {
-                        e.preventDefault();
-                        const entityId = e.dataTransfer.getData('text/plain');
-                        this.eventManager?.publish('formation_assign_request', { entityId, slotIndex: idx });
-                    });
-                    grid.appendChild(cell);
-                }
-            }
-        }
+        this.createFormationGridUI(squads);
 
         const confirmBtn = container.querySelector('#confirm-formation-btn');
         if (confirmBtn) {
@@ -1021,6 +995,46 @@ export class UIManager {
             this.eventManager?.subscribe('squad_data_changed', () => this.createSquadManagementUI());
             this._squadUIInitialized = true;
         }
+    }
+
+    // 진형 배치 UI 생성 및 렌더링
+    createFormationGridUI(squads) {
+        // 1. 진형 그리드 UI 설정
+        if (!this.formationGridUI) return;
+        this.formationGridUI.innerHTML = '<h2>진형 배치</h2>';
+        this.formationGridUI.style.display = 'grid';
+
+        for (let i = 0; i < 25; i++) {
+            const cell = document.createElement('div');
+            cell.className = 'formation-cell';
+            cell.dataset.index = i;
+            cell.textContent = i + 1;
+            cell.addEventListener('dragover', e => e.preventDefault());
+            cell.addEventListener('drop', e => {
+                e.preventDefault();
+                const entityId = e.dataTransfer.getData('text/plain');
+                this.eventManager?.publish('formation_assign_request', { entityId, slotIndex: i });
+            });
+            this.formationGridUI.appendChild(cell);
+        }
+
+        // 2. '배치할 분대 목록' UI 설정
+        const squadListContainer = document.getElementById('formation-squad-list');
+        if (!squadListContainer) return;
+        squadListContainer.innerHTML = '<h3>배치할 분대</h3>';
+
+        squads.forEach(squad => {
+            if (squad.members && squad.members.size > 0) {
+                const squadEl = document.createElement('div');
+                squadEl.className = 'squad-item';
+                squadEl.textContent = squad.name || squad.id;
+                squadEl.draggable = true;
+                squadEl.addEventListener('dragstart', e => {
+                    e.dataTransfer.setData('text/plain', squad.id);
+                });
+                squadListContainer.appendChild(squadEl);
+            }
+        });
     }
 
     updateCharacterSheet(entityId) {
