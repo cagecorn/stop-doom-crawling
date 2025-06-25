@@ -20,6 +20,7 @@ export class MonsterManager {
         this.monsters = [];
         this.metaAIManager = null;
         this.traitManager = null;
+        this.equipmentRenderManager = null;
         console.log("[MonsterManager] Initialized");
 
         if (this.eventManager) {
@@ -41,7 +42,14 @@ export class MonsterManager {
         this.metaAIManager = metaAIManager;
     }
 
+    setEquipmentRenderManager(manager) {
+        this.equipmentRenderManager = manager;
+    }
+
     addMonster(monster) {
+        if (this.equipmentRenderManager) {
+            monster.equipmentRenderManager = this.equipmentRenderManager;
+        }
         this.monsters.push(monster);
         if (this.metaAIManager) {
             const group =
