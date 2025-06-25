@@ -39,22 +39,30 @@ class FormationManager {
     }
 
     // 분대를 진형에 배치하고, 멤버들의 위치를 설정
-    apply(origin, entityMap, squadManager) {
+    apply(origin, entityMap, squadManager = null) {
         this.slots.forEach((squadData, idx) => {
             if (!squadData) return;
 
-            const squad = squadManager.getSquad(squadData.id);
-            if (!squad || !squad.members) return;
+            let members = [];
+
+            if (squadManager && typeof squadManager.getSquad === 'function' && typeof squadData === 'object') {
+                const squad = squadManager.getSquad(squadData.id);
+                if (!squad || !squad.members) return;
+                members = Array.isArray(squad.members) ? squad.members : Array.from(squad.members);
+            } else {
+                const memberId = typeof squadData === 'object' ? squadData.id : squadData;
+                members = [memberId];
+            }
 
             const basePos = this.getSlotPosition(idx);
 
-            squad.members.forEach(entityId => {
+            members.forEach(entityId => {
                 const ent = entityMap[entityId];
                 if (ent) {
                     // 타일 크기 내에서 무작위 오프셋 추가하여 뭉쳐있는 효과
                     const randomOffsetX = (Math.random() - 0.5) * this.tileSize * 0.8;
                     const randomOffsetY = (Math.random() - 0.5) * this.tileSize * 0.8;
-                    
+
                     ent.x = origin.x + basePos.x + randomOffsetX;
                     ent.y = origin.y + basePos.y + randomOffsetY;
                 }
