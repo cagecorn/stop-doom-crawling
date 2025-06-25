@@ -10,8 +10,8 @@ import { MeleeAI, RangedAI, HealerAI } from '../ai.js';
  * Orientation is fixed to RIGHT so that enemies face left.
  */
 export class EnemyFormationManager extends FormationManager {
-    constructor(rows = 3, cols = 3, tileSize = 192) {
-        super(rows, cols, tileSize, 'RIGHT');
+    constructor(cols = 3, rows = 3, tileSize = 192, eventManager = null) {
+        super(cols, rows, tileSize, eventManager, 'RIGHT');
         this.rules = [];
         this._registerDefaultRules();
     }

@@ -1,10 +1,12 @@
 class FormationManager {
-    constructor(cols, rows, tileSize, eventManager = null) {
-        this.cols = cols;
-        this.rows = rows;
-        this.tileSize = tileSize; // 타일 크기 (예: 64)
-        this.slots = new Array(cols * rows).fill(null); // 각 슬롯에는 분대(squad) 객체가 저장됨
-        this.eventManager = eventManager;
+    constructor(cols, rows, tileSize, eventManager = null, orientation = 'RIGHT') {
+        this.cols = Number.isFinite(cols) && cols > 0 ? Math.floor(cols) : 1;
+        this.rows = Number.isFinite(rows) && rows > 0 ? Math.floor(rows) : 1;
+        this.tileSize = Number.isFinite(tileSize) && tileSize > 0 ? tileSize : 1;
+        this.orientation = orientation;
+        // 각 슬롯에는 분대(squad) 객체가 저장됨
+        this.slots = new Array(this.cols * this.rows).fill(null);
+        this.eventManager = eventManager && typeof eventManager.subscribe === 'function' ? eventManager : null;
         this.eventManager?.subscribe('formation_assign_request', this.handleAssignSquad.bind(this));
     }
     
@@ -21,6 +23,12 @@ class FormationManager {
         this.slots[slotIndex] = { id: squadId }; // 임시 객체, 실제로는 squad 객체여야 함
 
         console.log(`${squadId} 분대를 슬롯 ${slotIndex}에 배치 요청`);
+        this.eventManager?.publish('formation_data_changed', { slots: this.slots });
+    }
+
+    assign(slotIndex, entityId) {
+        if (slotIndex < 0 || slotIndex >= this.slots.length) return;
+        this.slots[slotIndex] = entityId;
         this.eventManager?.publish('formation_data_changed', { slots: this.slots });
     }
 
