@@ -583,3 +583,22 @@ body {
 }
 
 /* ... (나머지 CSS 코드 전체) ... */
+
+#squad-management {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+#formation-placement {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+#formation-squad-list {
+    border: 1px solid #ccc;
+    padding: 10px;
+    background-color: rgba(255, 255, 255, 0.8);
+}
+
