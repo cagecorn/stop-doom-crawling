@@ -1,9 +1,25 @@
 // src/pathfindingManager.js
 import tfLoader from '../utils/tf-loader.js';
+import { SETTINGS } from '../../config/gameSettings.js';
 
 export class PathfindingManager {
     constructor(mapManager) {
         this.mapManager = mapManager;
+        if (SETTINGS.ENABLE_PATHFINDING_WORKER && typeof Worker !== 'undefined') {
+            try {
+                const url = new URL('../workers/pathfindingWorker.js', import.meta.url);
+                this.worker = new Worker(url);
+                const data = {
+                    map: mapManager.map,
+                    width: mapManager.width,
+                    height: mapManager.height,
+                    tileTypes: mapManager.tileTypes,
+                };
+                this.worker.postMessage({ type: 'init', mapData: data });
+            } catch (err) {
+                console.warn('[PathfindingManager] Worker init failed:', err);
+            }
+        }
     }
 
     _bfs(startX, startY, endX, endY, isBlocked) {
@@ -59,6 +75,17 @@ export class PathfindingManager {
     findPath(startX, startY, endX, endY, isBlocked = () => false) {
         if (startX === endX && startY === endY) {
             return [];
+        }
+
+        if (this.worker) {
+            return new Promise((resolve) => {
+                const handler = (e) => {
+                    this.worker.removeEventListener('message', handler);
+                    resolve(e.data || []);
+                };
+                this.worker.addEventListener('message', handler);
+                this.worker.postMessage({ type: 'find', args: [startX, startY, endX, endY] });
+            });
         }
 
         // debug logging removed to avoid performance issues
@@ -123,6 +150,10 @@ export class PathfindingManager {
     }
 
     async findPathTensor(startX, startY, endX, endY) {
+        if (!SETTINGS.ENABLE_TENSORFLOW_PATHING) {
+            return this.findPath(startX, startY, endX, endY);
+        }
+
         try {
             await tfLoader.init();
             const tf = tfLoader.getTf();
