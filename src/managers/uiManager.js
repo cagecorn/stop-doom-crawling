@@ -4,9 +4,16 @@ import { FAITHS } from '../data/faiths.js';
 import { TRAITS } from '../data/traits.js';
 import { SYNERGIES } from '../data/synergies.js';
 import { ARTIFACTS } from '../data/artifacts.js';
+import { memoryDB } from '../persistence/MemoryDB.js';
+import { SETTINGS } from '../../config/gameSettings.js';
+import { Draggable } from '../utils/Draggable.js';
+import { STRATEGY } from './ai-managers.js';
 
 export class UIManager {
-    constructor() {
+    constructor(eventManager = null, getEntityByIdCallback) {
+        this.eventManager = eventManager;
+        this.getEntityById = getEntityByIdCallback;
+        this.openCharacterSheets = new Map();
         this.levelElement = document.getElementById('ui-player-level');
         this.statPointsElement = document.getElementById('ui-player-statPoints');
         this.movementSpeedElement = document.getElementById('ui-player-movementSpeed');
@@ -30,21 +37,23 @@ export class UIManager {
         this.mercInventory = document.getElementById('merc-inventory');
         this.mercEquipment = document.getElementById('merc-equipment');
         this.mercSkills = document.getElementById('merc-skills');
+        this.reputationHistoryPanel = document.getElementById('reputation-history-panel');
         this.closeMercDetailBtn = document.getElementById('close-merc-detail-btn');
         this.mercenaryPanel = document.getElementById('mercenary-panel');
         this.mercenaryList = document.getElementById('mercenary-list');
-        // 장착 대상 선택 패널 요소
-        this.equipTargetPanel = document.getElementById('equipment-target-panel');
-        this.equipTargetList = document.getElementById('equipment-target-list');
+        this.settings = SETTINGS;
+        if (this.reputationHistoryPanel && !this.settings.ENABLE_REPUTATION_SYSTEM) {
+            this.reputationHistoryPanel.style.display = 'none';
+        }
         // 인벤토리 패널 요소
         this.inventoryPanel = document.getElementById('inventory-panel');
-        this.equippedItemsContainer = document.getElementById('equipped-items');
-        this.inventoryListContainer = document.getElementById('inventory-list');
+        this.inventoryGrid = document.querySelector('#inventory-panel .inventory-grid');
+        this.squadManagementPanel = document.getElementById('squad-management-ui');
+        this._squadUIInitialized = false;
+        this.formationManager = null;
         this.tooltip = document.getElementById('tooltip');
-        this.characterSheetPanel = document.getElementById('character-sheet-panel');
-        this.sheetCharacterName = document.getElementById('sheet-character-name');
-        this.sheetEquipment = document.getElementById('sheet-equipment');
-        this.sheetInventory = document.getElementById('sheet-inventory');
+        this.characterSheetTemplate = document.getElementById('character-sheet-template');
+        this.uiContainer = document.getElementById('ui-container');
         this.callbacks = {};
         this._lastInventory = [];
         this._lastConsumables = [];
@@ -52,6 +61,10 @@ export class UIManager {
         this._isInitialized = false;
         this.particleDecoratorManager = null;
         this.vfxManager = null;
+        this.getSharedInventory = null;
+
+        this.draggables = [];
+        this._initDraggables();
 
         // 스탯 표시용 이름 매핑
         this.statDisplayNames = {
@@ -82,6 +95,18 @@ export class UIManager {
             charmResist: '매혹 저항',
             movementResist: '이동 방해 저항',
         };
+
+        if (this.eventManager) {
+            this.eventManager.subscribe('squad_data_changed', ({ squads }) => {
+                if (window.game && typeof window.game.getFriendlyEntities === 'function') {
+                    this.renderSquadUI(squads, window.game.getFriendlyEntities());
+                }
+            });
+            this.eventManager.subscribe('formation_data_changed', ({ slots }) => {
+                this.renderFormationUI(slots);
+            });
+            this.eventManager.subscribe('game_state_changed', this.handleGameStateChange.bind(this));
+        }
     }
 
     init(callbacks) {
@@ -113,26 +138,9 @@ export class UIManager {
             btn.onclick = () => this.hidePanel(btn.dataset.panelId);
         });
 
-        const closeEquipBtn = document.getElementById('close-equip-target-btn');
-        if (closeEquipBtn) closeEquipBtn.onclick = () => this.hideEquipTargetPanel();
 
-        if (this.characterSheetPanel) {
-            this.characterSheetPanel.querySelectorAll('.stat-tab-btn').forEach(btn => {
-                btn.onclick = () => {
-                    this.characterSheetPanel.querySelectorAll('.stat-tab-btn').forEach(b => b.classList.remove('active'));
-                    this.characterSheetPanel.querySelectorAll('.stat-page').forEach(p => {
-                        p.classList.remove('active');
-                        p.classList.add('hidden');
-                    });
-                    btn.classList.add('active');
-                    const page = this.characterSheetPanel.querySelector(`#stat-page-${btn.dataset.tab}`);
-                    if (page) {
-                        page.classList.add('active');
-                        page.classList.remove('hidden');
-                    }
-                };
-            });
-        }
+
+        // 기존 단일 캐릭터 시트 탭 로직은 동적 패널 생성 시에 처리됩니다.
         this._isInitialized = true;
     }
 
@@ -140,155 +148,10 @@ export class UIManager {
         this.init(cb);
     }
 
-    showMercenaryDetail(mercenary) {
-        if (!this.mercDetailPanel) return;
-
-        this.mercDetailName.textContent = `${mercenary.constructor.name} (Lv.${mercenary.stats.get('level')})`;
-
-        const statsToShow = ['attackPower', 'strength', 'agility', 'endurance', 'visionRange', 'movementSpeed', 'hpRegen', 'mpRegen'];
-        this.mercStatsContainer.innerHTML = '';
-
-        // 레벨 및 경험치 표시
-        const levelDiv = document.createElement('div');
-        levelDiv.className = 'stat-line';
-        levelDiv.textContent = `레벨: ${mercenary.stats.get('level')}`;
-        this.mercStatsContainer.appendChild(levelDiv);
-
-        const expDiv = document.createElement('div');
-        expDiv.className = 'stat-line';
-        expDiv.textContent = `EXP: ${mercenary.stats.get('exp')} / ${mercenary.stats.get('expNeeded')}`;
-        this.mercStatsContainer.appendChild(expDiv);
-
-        const hpDiv = document.createElement('div');
-        hpDiv.className = 'stat-line';
-        const shieldText = mercenary.shield > 0 ? ` <span style="color: blue">+${mercenary.shield.toFixed(1)}</span>` : '';
-        hpDiv.innerHTML = `HP: ${mercenary.hp.toFixed(1)} / ${mercenary.maxHp}${shieldText}`;
-        this.mercStatsContainer.appendChild(hpDiv);
-
-        const mpDiv = document.createElement('div');
-        mpDiv.className = 'stat-line';
-        mpDiv.textContent = `MP: ${mercenary.mp.toFixed(1)} / ${mercenary.maxMp}`;
-        this.mercStatsContainer.appendChild(mpDiv);
-
-        const fullDiv = document.createElement('div');
-        fullDiv.className = 'stat-line';
-        fullDiv.textContent = `🍗 배부름: ${mercenary.fullness.toFixed(1)} / ${mercenary.maxFullness}`;
-        this.mercStatsContainer.appendChild(fullDiv);
-
-        const affinityDiv = document.createElement('div');
-        affinityDiv.className = 'stat-line';
-        affinityDiv.textContent = `💕 호감도: ${mercenary.affinity.toFixed(1)} / ${mercenary.maxAffinity}`;
-        this.mercStatsContainer.appendChild(affinityDiv);
-
-        const mbtiDiv = document.createElement('div');
-        mbtiDiv.className = 'stat-line';
-        const mbtiSpan = document.createElement('span');
-        mbtiSpan.textContent = mercenary.properties.mbti;
-        this._attachTooltip(mbtiSpan, this._getMBTITooltip(mercenary.properties.mbti));
-        mbtiDiv.innerHTML = 'MBTI: ';
-        mbtiDiv.appendChild(mbtiSpan);
-        this.mercStatsContainer.appendChild(mbtiDiv);
-
-        const faithDiv = document.createElement('div');
-        faithDiv.className = 'stat-line';
-        const faithSpan = document.createElement('span');
-        const fId = mercenary.properties.faith;
-        faithSpan.textContent = fId ? FAITHS[fId].name : FAITHS.NONE.name;
-        this._attachTooltip(faithSpan, this._getFaithTooltip(fId));
-        faithDiv.innerHTML = '신앙: ';
-        faithDiv.appendChild(faithSpan);
-        this.mercStatsContainer.appendChild(faithDiv);
-
-        if (mercenary.properties.traits && mercenary.properties.traits.length) {
-            const traitDiv = document.createElement('div');
-            traitDiv.className = 'stat-line';
-            traitDiv.innerHTML = '특성: ';
-            mercenary.properties.traits.forEach(id => {
-                const span = document.createElement('span');
-                span.textContent = TRAITS[id]?.name || id;
-                this._attachTooltip(span, this._getTraitTooltip(id));
-                traitDiv.appendChild(span);
-                traitDiv.appendChild(document.createTextNode(' '));
-            });
-            this.mercStatsContainer.appendChild(traitDiv);
-        }
-
-        statsToShow.forEach(stat => {
-            const statDiv = document.createElement('div');
-            statDiv.className = 'stat-line';
-            const displayName = this.statDisplayNames[stat] || stat;
-            const statValue = mercenary.stats.get(stat);
-            if (stat === 'attackPower') {
-                const bonus = mercenary.damageBonus || 0;
-                const bonusText = bonus > 0 ? ` <span style="color:red">+${bonus}</span>` : '';
-                statDiv.innerHTML = `${displayName}: ${statValue}${bonusText}`;
-            } else {
-                statDiv.textContent = `${displayName}: ${statValue}`;
-            }
-            this.mercStatsContainer.appendChild(statDiv);
-        });
-
-        if (mercenary.effects && mercenary.effects.length > 0) {
-            const effDiv = document.createElement('div');
-            effDiv.className = 'stat-line';
-            const list = mercenary.effects.map(e => `${e.name}(${Math.ceil(e.remaining / 100)}턴)`);
-            effDiv.textContent = `효과: ${list.join(', ')}`;
-            this.mercStatsContainer.appendChild(effDiv);
-        }
-
-        if (this.mercEquipment) {
-            this.mercEquipment.innerHTML = '';
-            for (const slot in mercenary.equipment) {
-                const item = mercenary.equipment[slot];
-                const slotDiv = document.createElement('div');
-                slotDiv.className = 'equip-slot';
-                if (item && item.image) {
-                    const img = document.createElement('img');
-                    img.src = item.image.src;
-                    slotDiv.appendChild(img);
-                    this._attachTooltip(slotDiv, this._getItemTooltip(item));
-                } else {
-                    slotDiv.textContent = slot;
-                }
-                this.mercEquipment.appendChild(slotDiv);
-            }
-        }
-
-        if (this.mercInventory) {
-            this.mercInventory.innerHTML = '';
-            const inventory = mercenary.consumables || mercenary.inventory || [];
-            inventory.forEach(item => {
-                const slotDiv = document.createElement('div');
-                slotDiv.className = 'inventory-item-slot';
-                if (item.image) {
-                    const img = document.createElement('img');
-                    img.src = item.image.src;
-                    slotDiv.appendChild(img);
-                } else {
-                    slotDiv.textContent = item.name;
-                }
-                this._attachTooltip(slotDiv, this._getItemTooltip(item));
-                this.mercInventory.appendChild(slotDiv);
-            });
-        }
-
-        if (this.mercSkills) {
-            this.mercSkills.innerHTML = '';
-            (mercenary.skills || []).forEach(skillId => {
-                const skill = SKILLS[skillId];
-                if (!skill) return;
-                const div = document.createElement('div');
-                div.className = 'skill-slot';
-                div.style.backgroundImage = `url(${skill.icon})`;
-                div.style.backgroundSize = 'cover';
-                this._attachTooltip(div, `<strong>${skill.name}</strong><br>${skill.description}`);
-                this.mercSkills.appendChild(div);
-            });
-        }
-
-        this.mercDetailPanel.classList.remove('hidden');
-        if (this.gameState) this.gameState.isPaused = true;
+    async showMercenaryDetail(mercenary) {
+        this.showCharacterSheet(mercenary);
     }
+
 
     hideMercenaryDetail() {
         if (this.mercDetailPanel) {
@@ -297,257 +160,76 @@ export class UIManager {
         if (this.gameState) this.gameState.isPaused = false;
     }
 
-    showCharacterSheet(entity) {
-        if (!this.characterSheetPanel) return;
-        this.renderCharacterSheet(entity);
-        this.showPanel('character-sheet-panel');
-    }
-
-    renderCharacterSheet(entity) {
-        if (!this.characterSheetPanel) return;
-        if (this.sheetCharacterName)
-            this.sheetCharacterName.textContent = `${entity.constructor.name} (Lv.${entity.stats.get('level')})`;
-
-        if (this.sheetEquipment) {
-            this.sheetEquipment.innerHTML = '';
-            const slots = ['main_hand', 'off_hand', 'armor', 'helmet', 'gloves', 'boots', 'accessory1', 'accessory2'];
-            slots.forEach(slot => {
-                const item = entity.equipment ? entity.equipment[slot] : null;
-                const slotDiv = document.createElement('div');
-                slotDiv.className = 'equip-slot';
-                slotDiv.dataset.slot = slot;
-                
-                const nameSpan = document.createElement('span');
-                nameSpan.textContent = slot;
-                slotDiv.appendChild(nameSpan);
-
-                const itemSpan = document.createElement('span');
-                itemSpan.textContent = item ? item.name : '없음';
-                slotDiv.appendChild(itemSpan);
-                
-                if(item) {
-                    this._attachTooltip(slotDiv, this._getItemTooltip(item));
-                } else {
-                    this._attachTooltip(slotDiv, `<strong>${slot}</strong><br>비어있음`);
-                }
-
-                this.sheetEquipment.appendChild(slotDiv);
-            });
-        }
-
-        if (this.sheetInventory) {
-            this.sheetInventory.innerHTML = '';
-            const inventory = entity.consumables || entity.inventory || [];
-            inventory.forEach(item => {
-                const slotDiv = document.createElement('div');
-                slotDiv.className = 'inventory-item-slot';
-                if (item.image) {
-                    const img = document.createElement('img');
-                    img.src = item.image.src;
-                    slotDiv.appendChild(img);
-                } else {
-                    slotDiv.textContent = item.name;
-                }
-                this._attachTooltip(slotDiv, this._getItemTooltip(item));
-                this.sheetInventory.appendChild(slotDiv);
-            });
-        }
-
-        const page1 = this.characterSheetPanel.querySelector('#stat-page-1');
-        if (page1) {
-            page1.innerHTML = '';
-            const statsToShow = ['strength','agility','endurance','focus','intelligence','movement','maxHp','maxMp','attackPower','movementSpeed','visionRange','hpRegen','mpRegen'];
-            statsToShow.forEach(stat => {
-                const line = document.createElement('div');
-                line.className = 'stat-line';
-                const displayName = this.statDisplayNames[stat] || stat;
-                if (stat === 'attackPower') {
-                    const base = entity.stats.get(stat);
-                    const bonus = entity.damageBonus || 0;
-                    const bonusText = bonus > 0 ? ` <span style="color:red">+${bonus}</span>` : '';
-                    line.innerHTML = `<span>${displayName}:</span> <span>${base}${bonusText}</span>`;
-                } else {
-                    line.innerHTML = `<span>${displayName}:</span> <span>${entity.stats.get(stat)}</span>`;
-                }
-                page1.appendChild(line);
-            });
-
-            if (entity.effects && entity.effects.length > 0) {
-                const effLine = document.createElement('div');
-                effLine.className = 'stat-line';
-                const list = entity.effects.map(e => `${e.name}(${Math.ceil(e.remaining / 100)}턴)`);
-                effLine.textContent = `effects: ${list.join(', ')}`;
-                page1.appendChild(effLine);
-            }
-
-            if (entity.fullness !== undefined) {
-                const fLine = document.createElement('div');
-                fLine.className = 'stat-line';
-                fLine.innerHTML = `<span>fullness:</span> <span>${entity.fullness.toFixed(1)} / ${entity.maxFullness}</span>`;
-                page1.appendChild(fLine);
-            }
-            if (entity.affinity !== undefined) {
-                const aLine = document.createElement('div');
-                aLine.className = 'stat-line';
-                aLine.innerHTML = `<span>affinity:</span> <span>${entity.affinity.toFixed(1)} / ${entity.maxAffinity}</span>`;
-                page1.appendChild(aLine);
-            }
-
-        if (entity.properties && entity.properties.mbti) {
-            const mLine = document.createElement('div');
-            mLine.className = 'stat-line';
-            const span = document.createElement('span');
-            span.textContent = entity.properties.mbti;
-            this._attachTooltip(span, this._getMBTITooltip(entity.properties.mbti));
-            mLine.innerHTML = 'MBTI: ';
-            mLine.appendChild(span);
-            page1.appendChild(mLine);
-        }
-
-            if (entity.properties && entity.properties.faith) {
-                const fLine2 = document.createElement('div');
-                fLine2.className = 'stat-line';
-                const span2 = document.createElement('span');
-                const fId2 = entity.properties.faith;
-                span2.textContent = FAITHS[fId2].name;
-                this._attachTooltip(span2, this._getFaithTooltip(fId2));
-                fLine2.innerHTML = 'faith: ';
-                fLine2.appendChild(span2);
-                page1.appendChild(fLine2);
-            }
-
-            if (entity.properties && Array.isArray(entity.properties.traits)) {
-                const tLine = document.createElement('div');
-                tLine.className = 'stat-line';
-                tLine.innerHTML = 'traits: ';
-                entity.properties.traits.forEach(id => {
-                    const span = document.createElement('span');
-                    span.textContent = TRAITS[id]?.name || id;
-                    this._attachTooltip(span, this._getTraitTooltip(id));
-                    tLine.appendChild(span);
-                    tLine.appendChild(document.createTextNode(' '));
-                });
-                page1.appendChild(tLine);
-            }
-        }
-
-        const page2 = this.characterSheetPanel.querySelector('#stat-page-2');
-        if (page2) {
-            page2.innerHTML = '<h3>무기 숙련도</h3>';
-            const proficiencyList = document.createElement('div');
-            proficiencyList.className = 'proficiency-list';
-
-            for (const weaponType in entity.proficiency) {
-                const prof = entity.proficiency[weaponType];
-                const line = document.createElement('div');
-                line.className = 'proficiency-line';
-                const expRatio = (prof.exp / prof.expNeeded) * 100;
-                line.innerHTML = `
-                    <span class="prof-name">${weaponType}</span>
-                    <span class="prof-level">Lv.${prof.level}</span>
-                    <div class="prof-exp-bar-container">
-                        <div class="prof-exp-bar-fill" style="width: ${expRatio}%"></div>
-                        <span class="prof-exp-text">${prof.exp}/${prof.expNeeded}</span>
-                    </div>
-                `;
-                proficiencyList.appendChild(line);
-            }
-            page2.appendChild(proficiencyList);
-
-            // 상태이상 저항 스탯 표시
-            const resistHeader = document.createElement('h3');
-            resistHeader.style.marginTop = '15px';
-            resistHeader.textContent = '상태이상 저항';
-            page2.appendChild(resistHeader);
-
-            const resistList = document.createElement('div');
-            resistList.className = 'proficiency-list';
-
-            const resistStats = [
-                'poisonResist', 'freezeResist', 'sleepResist', 'paralysisResist',
-                'burnResist', 'bleedResist', 'petrifyResist', 'silenceResist',
-                'blindResist', 'fearResist', 'confusionResist', 'charmResist', 'movementResist'
-            ];
-
-            resistStats.forEach(stat => {
-                const value = entity.stats.get(stat) * 100;
-                if (value === 0) return;
-                const line = document.createElement('div');
-                line.className = 'stat-line';
-                const name = this.statDisplayNames[stat] || stat.replace('Resist', '');
-                line.innerHTML = `<span>${name}:</span> <span>${value.toFixed(0)}%</span>`;
-                resistList.appendChild(line);
-            });
-            page2.appendChild(resistList);
-        }
-    }
 
     showPanel(panelId) {
-        if (panelId === 'inventory' && this.inventoryPanel) {
+        if ((panelId === 'inventory' || panelId === 'inventory-panel') && this.inventoryPanel) {
             this.inventoryPanel.classList.remove('hidden');
-            if (this.gameState) this.renderInventory(this.gameState);
+            this.renderSharedInventory();
         } else if (panelId === 'mercenary-panel' && this.mercenaryPanel) {
             this.mercenaryPanel.classList.remove('hidden');
             if (this.mercenaryManager) this.renderMercenaryList();
-        } else if (panelId === 'character-sheet-panel' && this.characterSheetPanel) {
-            this.characterSheetPanel.classList.remove('hidden');
+        } else if (panelId === 'squad-management-ui' && this.squadManagementPanel) {
+            this.squadManagementPanel.classList.remove('hidden');
+            this.createSquadManagementUI();
         }
     }
 
     hidePanel(panelId) {
-        if (panelId === 'inventory' && this.inventoryPanel) {
+        if ((panelId === 'inventory' || panelId === 'inventory-panel') && this.inventoryPanel) {
             this.inventoryPanel.classList.add('hidden');
         } else if (panelId === 'mercenary-panel' && this.mercenaryPanel) {
             this.mercenaryPanel.classList.add('hidden');
-        } else if (panelId === 'character-sheet-panel' && this.characterSheetPanel) {
-            this.characterSheetPanel.classList.add('hidden');
+        } else if (panelId === 'squad-management-ui' && this.squadManagementPanel) {
+            this.squadManagementPanel.classList.add('hidden');
         }
         if (this.gameState) this.gameState.isPaused = false;
     }
 
     renderInventory(gameState) {
         const player = gameState.player;
-        this.equippedItemsContainer.innerHTML = '';
-        for (const slot in player.equipment) {
-            const item = player.equipment[slot];
-            const slotDiv = document.createElement('div');
-            slotDiv.className = 'equip-slot';
-            slotDiv.dataset.slot = slot;
-            if (item && item.image) {
-                const img = document.createElement('img');
-                img.src = item.image.src;
-                slotDiv.appendChild(img);
-                this._attachTooltip(slotDiv, this._getItemTooltip(item));
-            } else {
-                slotDiv.textContent = slot;
+        if (this.equippedItemsContainer) {
+            this.equippedItemsContainer.innerHTML = '';
+            for (const slot in player.equipment) {
+                const item = player.equipment[slot];
+                const slotDiv = this.createSlotElement(player, slot, item);
+                this.equippedItemsContainer.appendChild(slotDiv);
             }
-            this.equippedItemsContainer.appendChild(slotDiv);
         }
 
-        this.inventoryListContainer.innerHTML = '';
-        gameState.inventory.forEach((item, index) => {
-            const slotDiv = document.createElement('div');
-            slotDiv.className = 'inventory-item-slot';
-            if (item.image) {
-                const img = document.createElement('img');
-                img.src = item.image.src;
-                img.alt = item.name;
-                slotDiv.appendChild(img);
-            } else {
-                slotDiv.textContent = item.name;
+        if (this.inventoryListContainer) {
+            this.inventoryListContainer.innerHTML = '';
+            const inv = gameState.inventory;
+            for (let i = 0; i < inv.length; i++) {
+                const item = inv[i];
+                const slotDiv = this.createSlotElement(player, 'inventory', item, i);
+                this.inventoryListContainer.appendChild(slotDiv);
             }
-            if (item.quantity > 1) {
-                const qty = document.createElement('span');
-                qty.className = 'item-qty';
-                qty.textContent = item.quantity;
-                slotDiv.appendChild(qty);
+        }
+    }
+
+    // 공유 인벤토리 패널을 격자 형태로 렌더링합니다.
+    renderSharedInventory() {
+        const inventoryData = this.getSharedInventory?.();
+        if (!inventoryData || !this.inventoryGrid) return;
+
+        const inventoryGrid = this.inventoryGrid;
+        inventoryGrid.innerHTML = '';
+        inventoryGrid.style.gridTemplateColumns = `repeat(${inventoryData.cols || 10}, 1fr)`;
+
+        for (let i = 0; i < inventoryData.slots.length; i++) {
+            const slotEl = document.createElement('div');
+            slotEl.classList.add('inventory-slot');
+            slotEl.dataset.targetInfo = JSON.stringify({ entityId: 'shared', slot: 'inventory', index: i });
+
+            const item = inventoryData.slots[i];
+            if (item) {
+                slotEl.dataset.sourceInfo = JSON.stringify({ entityId: 'shared', slot: 'inventory', index: i });
+                this.renderItemInSlot(slotEl, item);
             }
-            this._attachTooltip(slotDiv, this._getItemTooltip(item));
-            slotDiv.onclick = () => {
-                if (this.callbacks.onItemUse) this.callbacks.onItemUse(index);
-            };
-            this.inventoryListContainer.appendChild(slotDiv);
-        });
+
+            this.setupDropTarget(slotEl);
+            inventoryGrid.appendChild(slotEl);
+        }
     }
 
     updateUI(gameState) {
@@ -650,7 +332,7 @@ export class UIManager {
         if (current.length !== this._lastInventory.length) return true;
         for (let i = 0; i < current.length; i++) {
             if (current[i] !== this._lastInventory[i]) return true;
-            if (current[i].quantity !== this._lastInventory[i].quantity) return true;
+            if (current[i] && this._lastInventory[i] && current[i].quantity !== this._lastInventory[i].quantity) return true;
         }
         return false;
     }
@@ -684,38 +366,6 @@ export class UIManager {
                 gameState.inventory.splice(itemIndex, 1);
             }
             this.updateUI(gameState);
-        } else {
-            // 무기를 제외한 나머지 아이템도 장착 대상 선택 UI를 표시합니다.
-            this._showEquipTargetPanel(item, gameState);
-        }
-    }
-
-    _showEquipTargetPanel(item, gameState) {
-        if (!this.equipTargetPanel) return;
-
-        this.equipTargetList.innerHTML = '';
-        const targets = [gameState.player, ...(this.mercenaryManager ? this.mercenaryManager.mercenaries : [])];
-
-        targets.forEach((target, idx) => {
-            const button = document.createElement('button');
-            if (target.isPlayer) {
-                button.textContent = '플레이어';
-            } else {
-                button.textContent = `용병 ${idx}`;
-            }
-            button.onclick = () => {
-                if (this.onEquipItem) this.onEquipItem(target, item);
-                this.hideEquipTargetPanel();
-            };
-            this.equipTargetList.appendChild(button);
-        });
-
-        this.equipTargetPanel.classList.remove('hidden');
-    }
-
-    hideEquipTargetPanel() {
-        if (this.equipTargetPanel) {
-            this.equipTargetPanel.classList.add('hidden');
         }
     }
 
@@ -873,6 +523,109 @@ export class UIManager {
         return html;
     }
 
+    /**
+     * Create or update equipment UI for a character.
+     * @param {object} character
+     */
+    createEquipmentUI(character) {
+        const container = document.getElementById(`${character.id}-equipment`);
+        if (!container) return;
+        container.innerHTML = '';
+        const slotTypes = ['weapon', 'helmet'];
+        slotTypes.forEach(type => {
+            const el = this.createSlotElement(character, type, character.equipment[type]);
+            container.appendChild(el);
+        });
+    }
+
+    /**
+     * Create or update inventory UI for a character.
+     * @param {object} character
+     */
+    createInventoryUI(character) {
+        const container = document.getElementById(`${character.id}-inventory`);
+        if (!container) return;
+        container.innerHTML = '';
+        character.inventory.forEach((item, idx) => {
+            const el = this.createSlotElement(character, 'inventory', item, idx);
+            container.appendChild(el);
+        });
+    }
+
+    /**
+     * Build a slot element with drag & drop handlers.
+     */
+    createSlotElement(owner, slotType, item, inventoryIndex = -1) {
+        const slot = document.createElement('div');
+        slot.className = 'slot';
+        slot.dataset.ownerId = owner.id;
+        slot.dataset.slotType = slotType;
+        if (inventoryIndex > -1) slot.dataset.inventoryIndex = inventoryIndex;
+
+        slot.addEventListener('dragover', e => {
+            e.preventDefault();
+            slot.classList.add('drag-over');
+        });
+        slot.addEventListener('dragleave', () => slot.classList.remove('drag-over'));
+        slot.addEventListener('drop', e => {
+            e.preventDefault();
+            slot.classList.remove('drag-over');
+            try {
+                const dropped = JSON.parse(e.dataTransfer.getData('application/json'));
+                const from = {
+                    entity: this.getEntityById(dropped.from.entityId),
+                    slot: dropped.from.slot,
+                    index: dropped.from.index
+                };
+                const to = {
+                    entity: owner,
+                    slot: slotType,
+                    index: inventoryIndex
+                };
+                this.eventManager?.publish('ui_item_move_request', { from, to });
+            } catch (_) {}
+        });
+
+        if (item) {
+            const img = document.createElement('img');
+            img.src = item.iconPath || item.image?.src || '';
+            img.draggable = true;
+            img.addEventListener('dragstart', e => {
+                const fromData = { entityId: owner.id, slot: slotType, index: inventoryIndex };
+                e.dataTransfer.setData('application/json', JSON.stringify({ from: fromData }));
+                img.classList.add('dragging');
+            });
+            img.addEventListener('dragend', () => img.classList.remove('dragging'));
+            slot.appendChild(img);
+            if (item.quantity > 1) {
+                const qty = document.createElement('span');
+                qty.className = 'item-qty';
+                qty.textContent = item.quantity;
+                slot.appendChild(qty);
+            }
+            this._attachTooltip(slot, this._getItemTooltip(item));
+
+            // 드래그 앤 드롭을 사용하므로 클릭 이벤트는 필요 없습니다.
+        }
+
+        return slot;
+    }
+
+    _initDraggables() {
+        const pairs = [
+            [this.mercDetailPanel, this.mercDetailPanel?.querySelector('.window-header')],
+            [this.inventoryPanel, this.inventoryPanel?.querySelector('.window-header')],
+            [this.mercenaryPanel, this.mercenaryPanel?.querySelector('.window-header')],
+            [this.squadManagementPanel, this.squadManagementPanel?.querySelector('.window-header')],
+        ];
+        pairs.forEach(([panel, header]) => {
+            if (panel) {
+                panel.classList.add('draggable-window', 'window');
+                new Draggable(panel, header || panel);
+            }
+        });
+    }
+
     _attachTooltip(element, html) {
         if (!this.tooltip) return;
         element.onmouseenter = (e) => {
@@ -886,5 +639,462 @@ export class UIManager {
              this.tooltip.style.left = `${e.pageX + 10}px`;
              this.tooltip.style.top = `${e.pageY + 10}px`;
         }
+    }
+
+    // --- 다중 캐릭터 시트 및 드래그 앤 드롭 지원 메서드들 ---
+    showCharacterSheet(entity) {
+        if (this.openCharacterSheets.has(entity.id)) {
+            const panel = this.openCharacterSheets.get(entity.id);
+            panel.style.zIndex = this.getNextZIndex();
+            return;
+        }
+
+        if (!this.characterSheetTemplate) return;
+
+        const newPanel = this.characterSheetTemplate.cloneNode(true);
+        newPanel.id = `character-sheet-${entity.id}`;
+        newPanel.classList.remove('hidden', 'template');
+        newPanel.style.zIndex = this.getNextZIndex();
+
+        this.uiContainer.appendChild(newPanel);
+        this.renderCharacterSheet(entity, newPanel);
+
+        new Draggable(newPanel, newPanel.querySelector('.window-header'));
+        this.openCharacterSheets.set(entity.id, newPanel);
+
+        newPanel.querySelector('.close-btn').onclick = () => {
+            this.hideCharacterSheet(entity.id);
+        };
+    }
+
+    hideCharacterSheet(entityId) {
+        if (this.openCharacterSheets.has(entityId)) {
+            const panel = this.openCharacterSheets.get(entityId);
+            panel.remove();
+            this.openCharacterSheets.delete(entityId);
+        }
+    }
+
+    getNextZIndex() {
+        const arr = Array.from(this.openCharacterSheets.values());
+        const maxZ = arr.reduce((max, p) => Math.max(max, parseInt(p.style.zIndex || 200)), 200);
+        return maxZ + 1;
+    }
+
+    renderCharacterSheet(entity, panel) {
+        if (!panel) return;
+        const nameEl = panel.querySelector('#sheet-character-name');
+        if (nameEl) nameEl.textContent = `${entity.name || entity.constructor.name} (Lv.${entity.stats.get('level')})`;
+
+        const equipContainer = panel.querySelector('.sheet-equipment.equipment-slots');
+        if (equipContainer) {
+            equipContainer.innerHTML = '';
+            for (const slotName in entity.equipment) {
+                const slotEl = document.createElement('div');
+                slotEl.className = 'equip-slot';
+                slotEl.dataset.slot = slotName;
+                slotEl.dataset.targetInfo = JSON.stringify({ entityId: entity.id, slot: slotName });
+
+                const label = document.createElement('span');
+                label.textContent = this.getSlotLabel(slotName);
+                slotEl.appendChild(label);
+
+                const item = entity.equipment[slotName];
+                if (item) {
+                    const sourceInfo = { entityId: entity.id, slot: slotName };
+                    slotEl.dataset.sourceInfo = JSON.stringify(sourceInfo);
+                    this.renderItemInSlot(slotEl, item);
+                }
+
+                this.setupDropTarget(slotEl);
+                equipContainer.appendChild(slotEl);
+            }
+        }
+
+        const invBox = panel.querySelector('.sheet-inventory');
+        if (invBox) {
+            invBox.innerHTML = '';
+            (entity.consumables || entity.inventory || []).forEach((item, idx) => {
+                const el = document.createElement('div');
+                el.className = 'inventory-slot';
+                el.dataset.targetInfo = JSON.stringify({ entityId: entity.id, slot: 'inventory', index: idx });
+                if (item) {
+                    el.dataset.sourceInfo = JSON.stringify({ entityId: entity.id, slot: 'inventory', index: idx });
+                    this.renderItemInSlot(el, item);
+                }
+                this.setupDropTarget(el);
+                invBox.appendChild(el);
+            });
+        }
+
+        const skillBox = panel.querySelector('.sheet-skills');
+        if (skillBox) {
+            skillBox.innerHTML = '';
+            (entity.skills || []).forEach(skillId => {
+                const skill = SKILLS[skillId];
+                if (!skill) return;
+                const div = document.createElement('div');
+                div.className = 'skill-slot';
+                div.style.backgroundImage = `url(${skill.icon})`;
+                div.style.backgroundSize = 'cover';
+                this._attachTooltip(div, `<strong>${skill.name}</strong><br>${skill.description}`);
+                skillBox.appendChild(div);
+            });
+        }
+
+        const page1 = panel.querySelector('#stat-page-1');
+        if (page1) {
+            page1.innerHTML = '';
+            const statsToShow = ['strength','agility','endurance','focus','intelligence','movement','maxHp','maxMp','attackPower','movementSpeed','visionRange','hpRegen','mpRegen'];
+            statsToShow.forEach(stat => {
+                const line = document.createElement('div');
+                line.className = 'stat-line';
+                const displayName = this.statDisplayNames[stat] || stat;
+                if (stat === 'attackPower') {
+                    const base = entity.stats.get(stat);
+                    const bonus = entity.damageBonus || 0;
+                    const bonusText = bonus > 0 ? ` <span style="color:red">+${bonus}</span>` : '';
+                    line.innerHTML = `<span>${displayName}:</span> <span>${base}${bonusText}</span>`;
+                } else {
+                    line.innerHTML = `<span>${displayName}:</span> <span>${entity.stats.get(stat)}</span>`;
+                }
+                page1.appendChild(line);
+            });
+
+            if (entity.effects && entity.effects.length > 0) {
+                const effLine = document.createElement('div');
+                effLine.className = 'stat-line';
+                const list = entity.effects.map(e => `${e.name}(${Math.ceil(e.remaining / 100)}턴)`);
+                effLine.textContent = `effects: ${list.join(', ')}`;
+                page1.appendChild(effLine);
+            }
+
+            if (entity.fullness !== undefined) {
+                const fLine = document.createElement('div');
+                fLine.className = 'stat-line';
+                fLine.innerHTML = `<span>fullness:</span> <span>${entity.fullness.toFixed(1)} / ${entity.maxFullness}</span>`;
+                page1.appendChild(fLine);
+            }
+            if (entity.affinity !== undefined) {
+                const aLine = document.createElement('div');
+                aLine.className = 'stat-line';
+                aLine.innerHTML = `<span>affinity:</span> <span>${entity.affinity.toFixed(1)} / ${entity.maxAffinity}</span>`;
+                page1.appendChild(aLine);
+            }
+
+            if (entity.properties && entity.properties.mbti) {
+                const mLine = document.createElement('div');
+                mLine.className = 'stat-line';
+                const span = document.createElement('span');
+                span.textContent = entity.properties.mbti;
+                this._attachTooltip(span, this._getMBTITooltip(entity.properties.mbti));
+                mLine.innerHTML = 'MBTI: ';
+                mLine.appendChild(span);
+                page1.appendChild(mLine);
+            }
+
+            if (entity.properties && entity.properties.faith) {
+                const fLine2 = document.createElement('div');
+                fLine2.className = 'stat-line';
+                const span2 = document.createElement('span');
+                const fId2 = entity.properties.faith;
+                span2.textContent = FAITHS[fId2].name;
+                this._attachTooltip(span2, this._getFaithTooltip(fId2));
+                fLine2.innerHTML = 'faith: ';
+                fLine2.appendChild(span2);
+                page1.appendChild(fLine2);
+            }
+
+            if (entity.properties && Array.isArray(entity.properties.traits)) {
+                const tLine = document.createElement('div');
+                tLine.className = 'stat-line';
+                tLine.innerHTML = 'traits: ';
+                entity.properties.traits.forEach(id => {
+                    const span = document.createElement('span');
+                    span.textContent = TRAITS[id]?.name || id;
+                    this._attachTooltip(span, this._getTraitTooltip(id));
+                    tLine.appendChild(span);
+                    tLine.appendChild(document.createTextNode(' '));
+                });
+                page1.appendChild(tLine);
+            }
+        }
+
+        const page2 = panel.querySelector('#stat-page-2');
+        if (page2) {
+            page2.innerHTML = '<h3>무기 숙련도</h3>';
+            const proficiencyList = document.createElement('div');
+            proficiencyList.className = 'proficiency-list';
+
+            for (const weaponType in entity.proficiency) {
+                const prof = entity.proficiency[weaponType];
+                const line = document.createElement('div');
+                line.className = 'proficiency-line';
+                const expRatio = (prof.exp / prof.expNeeded) * 100;
+                line.innerHTML = `
+                    <span class="prof-name">${weaponType}</span>
+                    <span class="prof-level">Lv.${prof.level}</span>
+                    <div class="prof-exp-bar-container">
+                        <div class="prof-exp-bar-fill" style="width: ${expRatio}%"></div>
+                        <span class="prof-exp-text">${prof.exp}/${prof.expNeeded}</span>
+                    </div>
+                `;
+                proficiencyList.appendChild(line);
+            }
+            page2.appendChild(proficiencyList);
+
+            const resistHeader = document.createElement('h3');
+            resistHeader.style.marginTop = '15px';
+            resistHeader.textContent = '상태이상 저항';
+            page2.appendChild(resistHeader);
+
+            const resistList = document.createElement('div');
+            resistList.className = 'proficiency-list';
+
+            const resistStats = [
+                'poisonResist', 'freezeResist', 'sleepResist', 'paralysisResist',
+                'burnResist', 'bleedResist', 'petrifyResist', 'silenceResist',
+                'blindResist', 'fearResist', 'confusionResist', 'charmResist', 'movementResist'
+            ];
+
+            resistStats.forEach(stat => {
+                const value = entity.stats.get(stat) * 100;
+                if (value === 0) return;
+                const line = document.createElement('div');
+                line.className = 'stat-line';
+                const name = this.statDisplayNames[stat] || stat.replace('Resist', '');
+                line.innerHTML = `<span>${name}:</span> <span>${value.toFixed(0)}%</span>`;
+                resistList.appendChild(line);
+            });
+            page2.appendChild(resistList);
+        }
+    }
+
+    // 슬롯에 아이템을 표시하고 드래그 기능을 부여합니다.
+    renderItemInSlot(slotEl, item) {
+        slotEl.innerHTML = `<img src="${item.iconPath || item.image?.src || ''}" alt="${item.name}" title="${item.name}">`;
+        slotEl.classList.add('has-item');
+        slotEl.draggable = true;
+        slotEl.ondragstart = (e) => {
+            e.dataTransfer.setData('application/json', slotEl.dataset.sourceInfo);
+            e.dataTransfer.effectAllowed = 'move';
+        };
+        slotEl.ondragend = () => {};
+    }
+
+    setupDropTarget(slotEl) {
+        slotEl.ondragover = (e) => {
+            e.preventDefault();
+            slotEl.classList.add('drag-over');
+        };
+        slotEl.ondragleave = () => slotEl.classList.remove('drag-over');
+        slotEl.ondrop = (e) => {
+            e.preventDefault();
+            slotEl.classList.remove('drag-over');
+            const fromInfo = JSON.parse(e.dataTransfer.getData('application/json'));
+            const toInfo = JSON.parse(e.currentTarget.dataset.targetInfo);
+
+            if (!fromInfo || !toInfo) {
+                console.error("드래그 앤 드롭 정보가 부족합니다.");
+                return;
+            }
+
+            this.eventManager.publish('ui_item_move_request', { from: fromInfo, to: toInfo });
+        };
+    }
+
+    createSquadManagementUI() {
+        const container = this.squadManagementPanel;
+        if (!container || !this.mercenaryManager) return;
+        const content = container.querySelector('.squad-content');
+        if (!content) return;
+        content.innerHTML = '';
+
+        const squads = [
+            { id: 'unassigned', name: '미편성' },
+            ...Object.entries(this.squadManager?.getSquads() || {}).map(([id, sq]) => ({
+                id,
+                name: sq.name,
+                strategy: sq.strategy
+            }))
+        ];
+
+        const panelMap = {};
+        squads.forEach(sq => {
+            const panel = document.createElement('div');
+            panel.className = 'squad-panel';
+            panel.dataset.squadId = sq.id === 'unassigned' ? '' : sq.id;
+            panel.textContent = sq.name;
+
+            if (sq.id !== 'unassigned') {
+                const strategyContainer = document.createElement('div');
+                strategyContainer.className = 'strategy-controls';
+
+                const aggressiveBtn = document.createElement('button');
+                aggressiveBtn.textContent = '공격적';
+                if (sq.strategy === STRATEGY.AGGRESSIVE) aggressiveBtn.classList.add('active');
+                aggressiveBtn.onclick = () => {
+                    this.eventManager?.publish('squad_strategy_change_request', {
+                        squadId: sq.id,
+                        newStrategy: STRATEGY.AGGRESSIVE
+                    });
+                };
+
+                const defensiveBtn = document.createElement('button');
+                defensiveBtn.textContent = '방어적';
+                if (sq.strategy === STRATEGY.DEFENSIVE) defensiveBtn.classList.add('active');
+                defensiveBtn.onclick = () => {
+                    this.eventManager?.publish('squad_strategy_change_request', {
+                        squadId: sq.id,
+                        newStrategy: STRATEGY.DEFENSIVE
+                    });
+                };
+
+                strategyContainer.appendChild(aggressiveBtn);
+                strategyContainer.appendChild(defensiveBtn);
+                panel.appendChild(strategyContainer);
+            }
+            panel.addEventListener('dragover', e => e.preventDefault());
+            panel.addEventListener('drop', e => {
+                e.preventDefault();
+                const mercId = e.dataTransfer.getData('text/plain');
+                const toSquadId = panel.dataset.squadId || null;
+                this.eventManager?.publish('squad_assign_request', { mercId, toSquadId });
+            });
+            content.appendChild(panel);
+            panelMap[sq.id] = panel;
+        });
+
+        this.mercenaryManager.getMercenaries().forEach(merc => {
+            const el = document.createElement('div');
+            el.className = 'merc-portrait';
+            el.textContent = merc.id;
+            el.dataset.mercId = merc.id;
+            el.draggable = true;
+            el.addEventListener('dragstart', e => {
+                e.dataTransfer.setData('text/plain', merc.id);
+            });
+            const squadId = merc.squadId || 'unassigned';
+            const parent = panelMap[squadId] || content;
+            parent.appendChild(el);
+        });
+
+        const grid = document.getElementById('formation-grid');
+        if (grid && this.formationManager) {
+            grid.innerHTML = '';
+
+            const rows = this.formationManager.rows;
+            const cols = this.formationManager.cols;
+            const orientLeft = this.formationManager.orientation === 'LEFT';
+
+            for (let r = 0; r < rows; r++) {
+                for (let c = 0; c < cols; c++) {
+                    const idx = orientLeft
+                        ? (cols - 1 - c) * rows + r
+                        : c * rows + r;
+                    const id = this.formationManager.slots[idx];
+
+                    const cell = document.createElement('div');
+                    cell.className = 'formation-cell';
+                    cell.dataset.index = idx;
+                    cell.textContent = id ? id : idx + 1;
+                    cell.addEventListener('dragover', e => e.preventDefault());
+                    cell.addEventListener('drop', e => {
+                        e.preventDefault();
+                        const entityId = e.dataTransfer.getData('text/plain');
+                        this.eventManager?.publish('formation_assign_request', { entityId, slotIndex: idx });
+                    });
+                    grid.appendChild(cell);
+                }
+            }
+        }
+
+        const confirmBtn = container.querySelector('#confirm-formation-btn');
+        if (confirmBtn) {
+            confirmBtn.onclick = () => {
+                this.eventManager?.publish('formation_confirmed');
+                this.hidePanel('squad-management-ui');
+            };
+        }
+
+        if (!this._squadUIInitialized) {
+            this.eventManager?.subscribe('squad_data_changed', () => this.createSquadManagementUI());
+            this._squadUIInitialized = true;
+        }
+    }
+
+    updateCharacterSheet(entityId) {
+        if (this.openCharacterSheets.has(entityId)) {
+            const panel = this.openCharacterSheets.get(entityId);
+            const entity = this.getEntityById(entityId);
+            if (entity && panel) {
+                this.renderCharacterSheet(entity, panel);
+            }
+        }
+    }
+
+    renderSquadUI(squads, allEntities) {
+        const containers = document.querySelectorAll('.squad-panel, #unassigned-container');
+        containers.forEach(c => {
+            const h3 = c.querySelector('h3');
+            c.innerHTML = '';
+            if (h3) c.appendChild(h3);
+        });
+
+        allEntities.forEach(entity => {
+            const entityEl = this.createDraggableEntity ? this.createDraggableEntity(entity) : null;
+            if (!entityEl) return;
+            let parentId = 'unassigned-container';
+            for (const squad of squads) {
+                if (squad.members.has(entity.id)) {
+                    parentId = `${squad.id}-container`;
+                    break;
+                }
+            }
+            const parent = document.getElementById(parentId);
+            if (parent) parent.appendChild(entityEl);
+        });
+    }
+
+    renderFormationUI(slots) {
+        const grid = document.getElementById('formation-grid');
+        if (!grid) return;
+        grid.querySelectorAll('.formation-cell').forEach(cell => {
+            const idx = parseInt(cell.dataset.index);
+            cell.textContent = slots[idx] ? slots[idx] : idx + 1;
+        });
+    }
+
+    handleGameStateChange(newState) {
+        if (newState === 'FORMATION_SETUP') {
+            this.showPanel('squad-management-ui');
+        } else if (newState === 'COMBAT') {
+            this.hidePanel('squad-management-ui');
+        }
+    }
+
+    createDraggableEntity(entity) {
+        const el = document.createElement('div');
+        el.className = 'entity-token';
+        el.textContent = entity.id;
+        el.draggable = true;
+        el.addEventListener('dragstart', e => {
+            e.dataTransfer.setData('text/plain', entity.id);
+        });
+        return el;
+    }
+
+    getSlotLabel(slotName) {
+        const labels = {
+            main_hand: '주무기',
+            off_hand: '보조장비',
+            armor: '갑옷',
+            helmet: '투구',
+            gloves: '장갑',
+            boots: '신발',
+            accessory1: '장신구1',
+            accessory2: '장신구2'
+        };
+        return labels[slotName] || slotName;
     }
 }

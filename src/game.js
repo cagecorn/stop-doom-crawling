@@ -8,19 +8,24 @@ import { EventManager } from './managers/eventManager.js';
 import { CombatLogManager, SystemLogManager } from './managers/logManager.js';
 import { CombatCalculator } from './combat.js';
 import { TagManager } from './managers/tagManager.js';
+import { WorldEngine } from './worldEngine.js';
 import { MapManager } from './map.js';
 import { AquariumMapManager } from './aquariumMap.js';
 import { AquariumManager, AquariumInspector } from './managers/aquariumManager.js';
 import * as Managers from './managers/index.js'; // managers/index.js에서 모든 매니저를 한 번에 불러옴
+import { ReputationManager } from './managers/ReputationManager.js';
 import { AssetLoader } from './assetLoader.js';
 import { MetaAIManager, STRATEGY } from './managers/ai-managers.js';
 import { SaveLoadManager } from './managers/saveLoadManager.js';
 import { LayerManager } from './managers/layerManager.js';
+// 기존 인벤토리 함수는 InventoryManager에서 대체합니다.
+import { InventoryManager } from './managers/inventoryManager.js';
 import { PathfindingManager } from './managers/pathfindingManager.js';
 import { MovementManager } from './managers/movementManager.js';
 import { FogManager } from './managers/fogManager.js';
 import { NarrativeManager } from './managers/narrativeManager.js';
 import { TurnManager } from './managers/turnManager.js';
+import { EntityManager } from './managers/entityManager.js';
 import { KnockbackEngine } from './systems/KnockbackEngine.js';
 import { SupportEngine } from './systems/SupportEngine.js';
 import { SKILLS } from './data/skills.js';
@@ -29,8 +34,10 @@ import { Item } from './entities.js';
 import { rollOnTable } from './utils/random.js';
 import { getMonsterLootTable } from './data/tables.js';
 import { MicroEngine } from './micro/MicroEngine.js';
-import { MicroItemAIManager } from './managers/microItemAIManager.js';
 import { MicroCombatManager } from './micro/MicroCombatManager.js';
+import { MicroItemAIManager } from './managers/microItemAIManager.js';
+
+import { StatusEffectsManager } from './managers/statusEffectsManager.js';
 import { disarmWorkflow, armorBreakWorkflow } from './workflows.js';
 import { PossessionAIManager } from './managers/possessionAIManager.js';
 import { Ghost } from './entities.js';
@@ -38,14 +45,23 @@ import { TankerGhostAI, RangedGhostAI, SupporterGhostAI, CCGhostAI } from './ai.
 import { EMBLEMS } from './data/emblems.js';
 import { adjustMonsterStatsForAquarium } from './utils/aquariumUtils.js';
 import DataRecorder from './managers/dataRecorder.js';
+import GuidelineLoader from './managers/guidelineLoader.js';
 import { AspirationManager } from './managers/aspirationManager.js';
 import { MicroWorldWorker } from './micro/MicroWorldWorker.js';
 import { CinematicManager } from './managers/cinematicManager.js';
 import { ItemTracker } from './managers/itemTracker.js';
+import { findEntitiesInRadius } from './utils/entityUtils.js';
+import { LaneManager } from './managers/laneManager.js';
+import { LaneRenderManager } from './managers/laneRenderManager.js';
+import { LanePusherAI } from './ai/archetypes.js';
+import { LaneAssignmentManager } from './managers/laneAssignmentManager.js';
+import { FormationManager } from './managers/formationManager.js';
 
 export class Game {
     constructor() {
         this.loader = new AssetLoader();
+        this.gameState = { currentState: 'LOADING' };
+        this.state = 'IDLE'; // IDLE, FORMATION_SETUP, COMBAT
     }
 
     start() {
@@ -59,6 +75,8 @@ export class Game {
         this.loader.loadImage('wizard', 'assets/images/wizard.png');
         this.loader.loadImage('summoner', 'assets/images/summoner.png');
         this.loader.loadImage('bard', 'assets/images/bard.png');
+        // 불의 신 이미지 키를 jobId와 맞춰 'fire_god'으로 로드한다
+        this.loader.loadImage('fire_god', 'assets/images/fire-god.png');
         // 기존 호환성을 위해 기본 mercenary 키도 전사 이미지로 유지
         this.loader.loadImage('mercenary', 'assets/images/warrior.png');
         this.loader.loadImage('floor', 'assets/floor.png');
@@ -89,34 +107,58 @@ export class Game {
         this.loader.loadImage('parasite', 'assets/images/parasite.png');
         this.loader.loadImage('leech', 'assets/images/parasite.png');
         this.loader.loadImage('worm', 'assets/images/parasite.png');
+        // 월드맵 타일 이미지 로드
+        this.loader.loadImage('world-tile', 'assets/images/world-tile.png');
+        this.loader.loadImage('sea-tile', 'assets/images/sea-tile.png');
         this.loader.loadImage('talisman1', 'assets/images/talisman-1.png');
         this.loader.loadImage('talisman2', 'assets/images/talisman-2.png');
         // 휘장 아이템 이미지 로드
         this.loader.loadEmblemImages();
+        // 시각 효과 이미지 로드
+        this.loader.loadVfxImages();
 
         this.loader.onReady(assets => this.init(assets));
     }
 
     init(assets) {
         this.assets = assets;
-        // 현재 WebGL 레이어가 충분히 구현되지 않았으므로 2D 캔버스만 사용한다
-        this.layerManager = new LayerManager(false);
+        // 설정에 따라 WebGL 레이어를 활성화한다
+        this.layerManager = new LayerManager(SETTINGS.ENABLE_WEBGL_RENDERER);
         const canvas = this.layerManager.layers.mapBase;
 
         // === 1. 모든 매니저 및 시스템 생성 ===
         this.eventManager = new EventManager();
+        this.entityManager = new EntityManager(this.eventManager);
         this.inputHandler = new InputHandler(this.eventManager, this);
         this.combatLogManager = new CombatLogManager(this.eventManager);
-        this.systemLogManager = new SystemLogManager(this.eventManager);
+        
+        this.statusEffectsManager = new StatusEffectsManager(this.eventManager);
         this.tagManager = new TagManager();
         this.combatCalculator = new CombatCalculator(this.eventManager, this.tagManager);
         // Player begins in the Aquarium map for feature testing
         this.mapManager = new AquariumMapManager();
+        const mapPixelWidth = this.mapManager.width * this.mapManager.tileSize;
+        const mapPixelHeight = this.mapManager.height * this.mapManager.tileSize;
+        const laneCenters = this.mapManager.getLaneCenters ? this.mapManager.getLaneCenters() : null;
+        this.laneManager = new LaneManager(mapPixelWidth, mapPixelHeight, laneCenters);
+        this.laneRenderManager = new LaneRenderManager(this.laneManager, SETTINGS.ENABLE_AQUARIUM_LANES);
+        const formationSpacing = this.mapManager.tileSize * 2.5;
+        this.formationManager = new FormationManager(5, 5, formationSpacing, this.eventManager);
+        this.eventManager.subscribe('formation_assign_request', d => {
+            this.formationManager.assign(d.slotIndex, d.entityId);
+            this.uiManager?.createSquadManagementUI();
+        });
         this.saveLoadManager = new SaveLoadManager();
         this.turnManager = new TurnManager();
         this.narrativeManager = new NarrativeManager();
         this.supportEngine = new SupportEngine();
         this.factory = new CharacterFactory(assets, this);
+        this.inventoryManager = new InventoryManager({
+            eventManager: this.eventManager,
+            entityManager: this.entityManager,
+        });
+        // 월드맵 로직을 담당하는 엔진
+        this.worldEngine = new WorldEngine(this, assets);
 
         // --- 매니저 생성 부분 수정 ---
         this.managers = {};
@@ -137,10 +179,15 @@ export class Game {
                 name !== 'EffectManager' &&
                 name !== 'SkillManager' &&
                 name !== 'ProjectileManager' &&
+                name !== 'SquadManager' &&
                 name !== 'DataRecorder'
         );
         for (const managerName of otherManagerNames) {
-            this.managers[managerName] = new Managers[managerName](this.eventManager, assets, this.factory);
+            if (managerName === 'UIManager') {
+                this.managers[managerName] = new Managers.UIManager(this.eventManager, (id) => this.entityManager?.getEntityById(id));
+            } else {
+                this.managers[managerName] = new Managers[managerName](this.eventManager, assets, this.factory);
+            }
         }
 
         this.managers.EffectManager = new Managers.EffectManager(
@@ -176,6 +223,10 @@ export class Game {
         this.equipmentManager.setTagManager(this.tagManager);
 
         this.itemFactory = new ItemFactory(assets);
+        const eagerSword = this.itemFactory.create('eager_sword', 0, 0, this.mapManager.tileSize);
+        if (eagerSword) {
+            this.inventoryManager.getSharedInventory().push(eagerSword);
+        }
         this.pathfindingManager = new PathfindingManager(this.mapManager);
         this.motionManager = new Managers.MotionManager(this.mapManager, this.pathfindingManager);
         this.knockbackEngine = new KnockbackEngine(this.motionManager, this.vfxManager);
@@ -200,13 +251,40 @@ export class Game {
         this.effectIconManager = new Managers.EffectIconManager(this.eventManager, assets);
         // UIManager가 mercenaryManager에 접근할 수 있도록 설정
         this.uiManager.mercenaryManager = this.mercenaryManager;
+        this.mercenaryManager.setUIManager(this.uiManager);
         this.uiManager.particleDecoratorManager = this.particleDecoratorManager;
         this.uiManager.vfxManager = this.vfxManager;
-        this.metaAIManager = new MetaAIManager(this.eventManager);
+        this.uiManager.eventManager = this.eventManager;
+        this.uiManager.getSharedInventory = () => this.inventoryManager.getSharedInventory();
+        this.uiManager.formationManager = this.formationManager;
+        this.squadManager = new Managers.SquadManager(this.eventManager, this.mercenaryManager);
+        this.uiManager.squadManager = this.squadManager;
+        this.uiManager.createSquadManagementUI?.();
+        this.laneAssignmentManager = new LaneAssignmentManager({
+            laneManager: this.laneManager,
+            squadManager: this.squadManager,
+            eventManager: this.eventManager
+        });
+        this.metaAIManager = new MetaAIManager(this.eventManager, this.squadManager);
+        this.monsterManager.setMetaAIManager(this.metaAIManager);
+        if (SETTINGS.ENABLE_REPUTATION_SYSTEM) {
+            this.reputationManager = new ReputationManager(this.eventManager);
+            this.reputationManager.mercenaryManager = this.mercenaryManager;
+            this.reputationManager.mbtiEngine = this.metaAIManager.mbtiEngine;
+            this.reputationManager.loadReputationModel();
+        } else {
+            this.reputationManager = null;
+        }
         this.cinematicManager = new CinematicManager(this);
         this.dataRecorder = new DataRecorder(this);
         this.dataRecorder.init();
-        this.possessionAIManager = new PossessionAIManager(this.eventManager);
+        this.guidelineLoader = new GuidelineLoader(SETTINGS.GUIDELINE_REPO_URL);
+        this.guidelineLoader.load();
+        if (SETTINGS.ENABLE_POSSESSION_SYSTEM) {
+            this.possessionAIManager = new PossessionAIManager(this.eventManager);
+        } else {
+            this.possessionAIManager = null;
+        }
         this.itemFactory.emblems = EMBLEMS;
 
         this.skillManager = new Managers.SkillManager(
@@ -226,11 +304,13 @@ export class Game {
             supporter: new SupporterGhostAI(),
             cc: new CCGhostAI()
         };
-        const ghostTypes = Object.keys(ghostAIs);
-        const numGhosts = Math.floor(Math.random() * 3) + 1;
-        for (let i = 0; i < numGhosts; i++) {
-            const randomType = ghostTypes[Math.floor(Math.random() * ghostTypes.length)];
-            this.possessionAIManager.addGhost(new Ghost(randomType, ghostAIs[randomType]));
+        if (this.possessionAIManager) {
+            const ghostTypes = Object.keys(ghostAIs);
+            const numGhosts = Math.floor(Math.random() * 3) + 1;
+            for (let i = 0; i < numGhosts; i++) {
+                const randomType = ghostTypes[Math.floor(Math.random() * ghostTypes.length)];
+                this.possessionAIManager.addGhost(new Ghost(randomType, ghostAIs[randomType]));
+            }
         }
         this.petManager = new Managers.PetManager(this.eventManager, this.factory, this.metaAIManager, this.auraManager, this.vfxManager);
         this.managers.PetManager = this.petManager;
@@ -259,38 +339,42 @@ export class Game {
             }
         }
 
-        // Spawn monsters in small groups spread across different rooms
-        const groupCount = 3;
-        for (let g = 0; g < groupCount; g++) {
-            this.aquariumManager.spawnMonsterGroup(3, {
-                image: assets.monster,
-                baseStats: {},
-                ensureShield: g === 0
-            });
-        }
-        // Add a single epic monster to highlight new boss-level enemies
-        this.aquariumManager.addTestingFeature({
-            type: 'monster',
-            image: assets.epic_monster,
-            baseStats: {
-                sizeInTiles_w: 2,
-                sizeInTiles_h: 2,
-                strength: 5,
-                agility: 4,
-                endurance: 20,
-                movement: 6,
-                expValue: 100
-            },
-            skills: [SKILLS.poison_sting.id]
-        });
-        this.aquariumInspector.run();
-
+        // === 그룹 생성 ===
         this.playerGroup = this.metaAIManager.createGroup('player_party', STRATEGY.AGGRESSIVE);
         // 플레이어는 직접 조종하므로 AI를 비활성화하지만 용병은 계속 행동하게 둡니다.
         this.monsterGroup = this.metaAIManager.createGroup('dungeon_monsters', STRATEGY.AGGRESSIVE);
 
+        // === 몬스터 부대 생성 ===
+        const enemyFormationManager = new FormationManager(5, 5, formationSpacing, this.eventManager);
+        const enemyFormationOrigin = {
+            x: (this.mapManager.width - 8) * this.mapManager.tileSize,
+            y: (this.mapManager.height / 2) * this.mapManager.tileSize,
+        };
+        const monsterSquad = [];
+        const monsterCount = 15;
+        for (let i = 0; i < monsterCount; i++) {
+            const monster = this.factory.create('monster', {
+                x: 0,
+                y: 0,
+                tileSize: this.mapManager.tileSize,
+                groupId: this.monsterGroup.id,
+                image: assets.monster,
+            });
+            this.monsterManager.addMonster(monster);
+            monsterSquad.push(monster);
+        }
+        const monsterEntityMap = {};
+        monsterSquad.forEach(m => { monsterEntityMap[m.id] = m; });
+        monsterSquad.forEach((monster, idx) => {
+            if (idx < 25) {
+                enemyFormationManager.assign(idx, monster.id);
+            }
+        });
+        enemyFormationManager.apply(enemyFormationOrigin, monsterEntityMap);
+
         // === 2. 플레이어 생성 ===
-        const startPos = this.mapManager.getRandomFloorPosition() || { x: this.mapManager.tileSize, y: this.mapManager.tileSize };
+        let startPos;
+        startPos = { x: this.mapManager.tileSize * 8, y: (this.mapManager.height * this.mapManager.tileSize) / 2 };
         const player = this.factory.create('player', {
             x: startPos.x,
             y: startPos.y,
@@ -313,8 +397,9 @@ export class Game {
         if (pBoots) this.equipmentManager.equip(player, pBoots, null);
         if (pArmor) this.equipmentManager.equip(player, pArmor, null);
         this.gameState = {
+            currentState: 'WORLD',
             player,
-            inventory: [],
+            inventory: this.inventoryManager.getSharedInventory(),
             gold: 1000,
             statPoints: 5,
             camera: { x: 0, y: 0 },
@@ -322,129 +407,118 @@ export class Game {
             zoomLevel: SETTINGS.DEFAULT_ZOOM,
             isPaused: false
         };
+        this.cameraDrag = {
+            isDragging: false,
+            dragStart: { x: 0, y: 0 },
+            cameraStart: { x: 0, y: 0 },
+            followPlayer: true
+        };
         this.playerGroup.addMember(player);
+        // 월드 엔진에서도 동일한 플레이어 데이터를 사용하도록 설정
+        this.worldEngine.setPlayer(player);
 
         // 초기 아이템 배치
-        const potion = this.itemFactory.create(
-                                'potion',
-                                player.x + this.mapManager.tileSize,
-                                player.y,
-                                this.mapManager.tileSize);
-        const dagger = this.itemFactory.create('short_sword',
-                                player.x - this.mapManager.tileSize,
-                                player.y,
-                                this.mapManager.tileSize);
-        const bow = this.itemFactory.create('long_bow',
-                                player.x,
-                                player.y + this.mapManager.tileSize,
-                                this.mapManager.tileSize);
-        const violinBow = this.itemFactory.create('violin_bow',
-                                player.x + this.mapManager.tileSize,
-                                player.y - this.mapManager.tileSize,
-                                this.mapManager.tileSize);
-        const plateArmor = this.itemFactory.create('plate_armor',
-                                player.x + this.mapManager.tileSize * 2,
-                                player.y - this.mapManager.tileSize,
-                                this.mapManager.tileSize);
-        const foxEgg = this.itemFactory.create('pet_fox',
-                                player.x - this.mapManager.tileSize * 2,
-                                player.y,
-                                this.mapManager.tileSize);
-        const foxCharm = this.itemFactory.create('fox_charm',
-                                player.x,
-                                player.y - this.mapManager.tileSize * 2,
-                                this.mapManager.tileSize);
-        // --- 테스트용 휘장 아이템 4종 배치 ---
-        const emblemGuardian = this.itemFactory.create('emblem_guardian', player.x + 64, player.y + 64, this.mapManager.tileSize);
-        const emblemDestroyer = this.itemFactory.create('emblem_destroyer', player.x - 64, player.y + 64, this.mapManager.tileSize);
-        const emblemDevotion = this.itemFactory.create('emblem_devotion', player.x + 64, player.y - 64, this.mapManager.tileSize);
-        const emblemConductor = this.itemFactory.create('emblem_conductor', player.x - 64, player.y - 64, this.mapManager.tileSize);
-        this.itemManager.addItem(potion);
-        if (dagger) this.itemManager.addItem(dagger);
-        if (bow) this.itemManager.addItem(bow);
-        if (violinBow) this.itemManager.addItem(violinBow);
-        if (plateArmor) this.itemManager.addItem(plateArmor);
-        if (foxEgg) this.itemManager.addItem(foxEgg);
-        if (foxCharm) this.itemManager.addItem(foxCharm);
-        if(emblemGuardian) this.itemManager.addItem(emblemGuardian);
-        if(emblemDestroyer) this.itemManager.addItem(emblemDestroyer);
-        if(emblemDevotion) this.itemManager.addItem(emblemDevotion);
-        if(emblemConductor) this.itemManager.addItem(emblemConductor);
+        if (this.mapManager.name !== 'aquarium') {
+            const potion = this.itemFactory.create(
+                                    'potion',
+                                    player.x + this.mapManager.tileSize,
+                                    player.y,
+                                    this.mapManager.tileSize);
+            const dagger = this.itemFactory.create('short_sword',
+                                    player.x - this.mapManager.tileSize,
+                                    player.y,
+                                    this.mapManager.tileSize);
+            const bow = this.itemFactory.create('long_bow',
+                                    player.x,
+                                    player.y + this.mapManager.tileSize,
+                                    this.mapManager.tileSize);
+            const violinBow = this.itemFactory.create('violin_bow',
+                                    player.x + this.mapManager.tileSize,
+                                    player.y - this.mapManager.tileSize,
+                                    this.mapManager.tileSize);
+            const plateArmor = this.itemFactory.create('plate_armor',
+                                    player.x + this.mapManager.tileSize * 2,
+                                    player.y - this.mapManager.tileSize,
+                                    this.mapManager.tileSize);
+            const foxEgg = this.itemFactory.create('pet_fox',
+                                    player.x - this.mapManager.tileSize * 2,
+                                    player.y,
+                                    this.mapManager.tileSize);
+            const foxCharm = this.itemFactory.create('fox_charm',
+                                    player.x,
+                                    player.y - this.mapManager.tileSize * 2,
+                                    this.mapManager.tileSize);
+            // --- 테스트용 휘장 아이템 4종 배치 ---
+            const emblemGuardian = this.itemFactory.create('emblem_guardian', player.x + 64, player.y + 64, this.mapManager.tileSize);
+            const emblemDestroyer = this.itemFactory.create('emblem_destroyer', player.x - 64, player.y + 64, this.mapManager.tileSize);
+            const emblemDevotion = this.itemFactory.create('emblem_devotion', player.x + 64, player.y - 64, this.mapManager.tileSize);
+            const emblemConductor = this.itemFactory.create('emblem_conductor', player.x - 64, player.y - 64, this.mapManager.tileSize);
+            this.itemManager.addItem(potion);
+            if (dagger) this.itemManager.addItem(dagger);
+            if (bow) this.itemManager.addItem(bow);
+            if (violinBow) this.itemManager.addItem(violinBow);
+            if (plateArmor) this.itemManager.addItem(plateArmor);
+            if (foxEgg) this.itemManager.addItem(foxEgg);
+            if (foxCharm) this.itemManager.addItem(foxCharm);
+            if(emblemGuardian) this.itemManager.addItem(emblemGuardian);
+            if(emblemDestroyer) this.itemManager.addItem(emblemDestroyer);
+            if(emblemDevotion) this.itemManager.addItem(emblemDevotion);
+            if(emblemConductor) this.itemManager.addItem(emblemConductor);
+        }
 
         // === 3. 몬스터 생성 ===
-        const monsters = [];
-        const baseMonsterCount = this.mapManager.name === 'aquarium' ? 10 : 40;
-        for (let i = 0; i < baseMonsterCount; i++) {
-            const pos = this.mapManager.getRandomFloorPosition();
-            if (pos) {
-                let stats = {};
-                if (this.mapManager.name === 'aquarium') {
-                    stats = adjustMonsterStatsForAquarium(stats);
-                }
-                const monster = this.factory.create('monster', {
-                    x: pos.x,
-                    y: pos.y,
-                    tileSize: this.mapManager.tileSize,
-                    groupId: this.monsterGroup.id,
-                    image: assets.monster,
-                    baseStats: stats
-                });
-                monster.equipmentRenderManager = this.equipmentRenderManager;
-                // 몬스터 초기 장비 및 소지품 설정
-                monster.consumables = [];
-                monster.consumableCapacity = 4;
-                const itemCount = Math.floor(Math.random() * 3) + 2; // 장비 다양화를 위해 최소 2개
-                for (let j = 0; j < itemCount; j++) {
-                    const id = rollOnTable(getMonsterLootTable());
-                    const item = this.itemFactory.create(
-                        id,
-                        monster.x,
-                        monster.y,
-                        this.mapManager.tileSize
-                    );
-                    if (!item) continue;
-                    if (
-                        item.tags.includes('weapon') ||
-                        item.type === 'weapon' ||
-                        item.tags.includes('armor') ||
-                        item.type === 'armor'
-                    ) {
-                        this.equipmentManager.equip(monster, item, null);
-                    } else {
-                        monster.addConsumable(item);
-                    }
-                }
-                if (Math.random() < 0.15) {
-                    const pid = Math.random() < 0.5 ? 'parasite_leech' : 'parasite_worm';
-                    const pItem = this.itemFactory.create(
-                        pid,
-                        monster.x,
-                        monster.y,
-                        this.mapManager.tileSize
-                    );
-                    if (pItem) this.parasiteManager.equip(monster, pItem);
-                }
-                if (Math.random() < 0.3) {
-                    const bow = this.itemFactory.create(
-                        'long_bow',
-                        monster.x,
-                        monster.y,
-                        this.mapManager.tileSize
-                    );
-                    if (bow) this.equipmentManager.equip(monster, bow, null);
-                }
-                monsters.push(monster);
-            }
-        }
-        this.monsterManager.monsters.push(...monsters);
-        this.monsterManager.monsters.forEach(m => this.monsterGroup.addMember(m));
+        // 기존 무작위 스폰 로직을 제거하고 formationManager를 통해 일괄 배치합니다.
 
-        this.entityManager = {
-            findEntityByWeaponId: (weaponId) => {
-                const list = [this.gameState.player, ...this.mercenaryManager.mercenaries, ...this.monsterManager.monsters, ...(this.petManager?.pets || [])];
-                return list.find(e => e.equipment?.weapon && e.equipment.weapon.id === weaponId) || null;
-            }
-        };
+        if (SETTINGS.ENABLE_AQUARIUM_LANES) {
+            // --- 3-Lane 모드 설정 로직 ---
+            const friendlySquads = this.squadManager.getSquads();
+            const lanes = ['TOP', 'MID', 'BOTTOM'];
+            Object.values(friendlySquads).forEach((squad, index) => {
+                const lane = lanes[index];
+                if (!lane) return;
+                squad.name = lane;
+                squad.members.forEach(mercId => {
+                    const merc = this.entityManager.getEntityById(mercId);
+                    if (merc) {
+                        merc.team = 'LEFT';
+                        merc.lane = lane;
+                        merc.ai = new LanePusherAI();
+                        merc.currentWaypointIndex = 0;
+                    }
+                });
+            });
+
+            const allMonsters = this.monsterManager.getMonsters();
+            const monstersPerLane = Math.floor(allMonsters.length / 3);
+            allMonsters.forEach((monster, idx) => {
+                let lane = 'MID';
+                if (idx < monstersPerLane) lane = 'TOP';
+                else if (idx < monstersPerLane * 2) lane = 'BOTTOM';
+
+                monster.team = 'RIGHT';
+                monster.lane = lane;
+                monster.ai = new LanePusherAI();
+                monster.currentWaypointIndex = 0;
+                const startWaypoint = this.laneManager.getNextWaypoint(monster);
+                if (startWaypoint) {
+                    monster.x = startWaypoint.x;
+                    monster.y = startWaypoint.y;
+                }
+            });
+        }
+
+        this.entityManager.init(this.gameState.player, this.mercenaryManager.mercenaries, this.monsterManager.monsters);
+        // Apply initial formation for player party
+        const origin = { x: this.gameState.player.x, y: this.gameState.player.y };
+        const entityMap = { [player.id]: this.gameState.player };
+        this.mercenaryManager.mercenaries.forEach(m => { entityMap[m.id] = m; });
+        this.formationManager.assign(12, player.id);
+        this.mercenaryManager.mercenaries.forEach((m, idx) => {
+            const slotIndex = [6, 7, 8, 11, 13][idx] || idx;
+            this.formationManager.assign(slotIndex, m.id);
+        });
+        this.formationManager.apply(origin, entityMap);
+        this.equipmentManager.entityManager = this.entityManager;
         this.aspirationManager = new AspirationManager(this.eventManager, this.microWorld, this.effectManager, this.vfxManager, this.entityManager);
 
         // === 4. 용병 고용 로직 ===
@@ -455,16 +529,17 @@ export class Game {
                     this.gameState.gold -= 50;
                     const newMerc = this.mercenaryManager.hireMercenary(
                         'warrior',
-                        this.gameState.player.x + this.mapManager.tileSize,
+                        this.gameState.player.x,
                         this.gameState.player.y,
                         this.mapManager.tileSize,
                         'player_party'
                     );
 
                     if (newMerc) {
+                        this.laneAssignmentManager.assignMercenaryToLane(newMerc);
+                        this.entityManager.addEntity(newMerc);
                         this.playerGroup.addMember(newMerc);
                         this.eventManager.publish('mercenary_hired', { mercenary: newMerc });
-                        this.eventManager.publish('log', { message: `전사 용병을 고용했습니다.` });
                     }
                 } else {
                     this.eventManager.publish('log', { message: `골드가 부족합니다.` });
@@ -479,16 +554,17 @@ export class Game {
                     this.gameState.gold -= 50;
                     const newMerc = this.mercenaryManager.hireMercenary(
                         'archer',
-                        this.gameState.player.x + this.mapManager.tileSize,
+                        this.gameState.player.x,
                         this.gameState.player.y,
                         this.mapManager.tileSize,
                         'player_party'
                     );
 
                     if (newMerc) {
+                        this.laneAssignmentManager.assignMercenaryToLane(newMerc);
+                        this.entityManager.addEntity(newMerc);
                         this.playerGroup.addMember(newMerc);
                         this.eventManager.publish('mercenary_hired', { mercenary: newMerc });
-                        this.eventManager.publish('log', { message: `궁수 용병을 고용했습니다.` });
                     }
                 } else {
                     this.eventManager.publish('log', { message: `골드가 부족합니다.` });
@@ -503,16 +579,17 @@ export class Game {
                     this.gameState.gold -= 50;
                     const newMerc = this.mercenaryManager.hireMercenary(
                         'healer',
-                        this.gameState.player.x + this.mapManager.tileSize,
+                        this.gameState.player.x,
                         this.gameState.player.y,
                         this.mapManager.tileSize,
                         'player_party'
                     );
 
                     if (newMerc) {
+                        this.laneAssignmentManager.assignMercenaryToLane(newMerc);
+                        this.entityManager.addEntity(newMerc);
                         this.playerGroup.addMember(newMerc);
                         this.eventManager.publish('mercenary_hired', { mercenary: newMerc });
-                        this.eventManager.publish('log', { message: `힐러 용병을 고용했습니다.` });
                     }
                 } else {
                     this.eventManager.publish('log', { message: `골드가 부족합니다.` });
@@ -527,16 +604,17 @@ export class Game {
                     this.gameState.gold -= 50;
                     const newMerc = this.mercenaryManager.hireMercenary(
                         'wizard',
-                        this.gameState.player.x + this.mapManager.tileSize,
+                        this.gameState.player.x,
                         this.gameState.player.y,
                         this.mapManager.tileSize,
                         'player_party'
                     );
 
                     if (newMerc) {
+                        this.laneAssignmentManager.assignMercenaryToLane(newMerc);
+                        this.entityManager.addEntity(newMerc);
                         this.playerGroup.addMember(newMerc);
                         this.eventManager.publish('mercenary_hired', { mercenary: newMerc });
-                        this.eventManager.publish('log', { message: `마법사 용병을 고용했습니다.` });
                     }
                 } else {
                     this.eventManager.publish('log', { message: `골드가 부족합니다.` });
@@ -551,16 +629,17 @@ export class Game {
                     this.gameState.gold -= 50;
                     const newMerc = this.mercenaryManager.hireMercenary(
                         'bard',
-                        this.gameState.player.x + this.mapManager.tileSize,
+                        this.gameState.player.x,
                         this.gameState.player.y,
                         this.mapManager.tileSize,
                         'player_party'
                     );
 
                     if (newMerc) {
+                        this.laneAssignmentManager.assignMercenaryToLane(newMerc);
+                        this.entityManager.addEntity(newMerc);
                         this.playerGroup.addMember(newMerc);
                         this.eventManager.publish('mercenary_hired', { mercenary: newMerc });
-                        this.eventManager.publish('log', { message: `음유시인 용병을 고용했습니다.` });
                     }
                 } else {
                     this.eventManager.publish('log', { message: `골드가 부족합니다.` });
@@ -575,16 +654,42 @@ export class Game {
                     this.gameState.gold -= 50;
                     const newMerc = this.mercenaryManager.hireMercenary(
                         'summoner',
-                        this.gameState.player.x + this.mapManager.tileSize,
+                        this.gameState.player.x,
                         this.gameState.player.y,
                         this.mapManager.tileSize,
                         'player_party'
                     );
 
                     if (newMerc) {
+                        this.laneAssignmentManager.assignMercenaryToLane(newMerc);
+                        this.entityManager.addEntity(newMerc);
                         this.playerGroup.addMember(newMerc);
                         this.eventManager.publish('mercenary_hired', { mercenary: newMerc });
-                        this.eventManager.publish('log', { message: `소환사 용병을 고용했습니다.` });
+                    }
+                } else {
+                    this.eventManager.publish('log', { message: `골드가 부족합니다.` });
+                }
+            };
+        }
+
+        const fireGodBtn = document.getElementById('hire-fire-god');
+        if (fireGodBtn) {
+            fireGodBtn.onclick = () => {
+                if (this.gameState.gold >= 100) {
+                    this.gameState.gold -= 100;
+                    const newMerc = this.mercenaryManager.hireMercenary(
+                        'fire_god',
+                        this.gameState.player.x,
+                        this.gameState.player.y,
+                        this.mapManager.tileSize,
+                        'player_party'
+                    );
+
+                    if (newMerc) {
+                        this.laneAssignmentManager.assignMercenaryToLane(newMerc);
+                        this.entityManager.addEntity(newMerc);
+                        this.playerGroup.addMember(newMerc);
+                        this.eventManager.publish('mercenary_hired', { mercenary: newMerc });
                     }
                 } else {
                     this.eventManager.publish('log', { message: `골드가 부족합니다.` });
@@ -599,6 +704,16 @@ export class Game {
                 console.log("--- GAME STATE SAVED (SNAPSHOT) ---");
                 console.log(saveData);
                 this.eventManager.publish('log', { message: '게임 상태 스냅샷이 콘솔에 저장되었습니다.' });
+            };
+        }
+
+        const autoBtn = document.getElementById('toggle-autobattle-btn');
+        if (autoBtn) {
+            autoBtn.onclick = () => {
+                const player = this.gameState.player;
+                player.autoBattle = !player.autoBattle;
+                if (typeof player.updateAI === 'function') player.updateAI();
+                autoBtn.textContent = `자동 전투: ${player.autoBattle ? 'ON' : 'OFF'}`;
             };
         }
 
@@ -620,6 +735,19 @@ export class Game {
             }
         });
 
+        // 초기 상태를 진형 배치 단계로 설정하고 임시 전투 시작 버튼을 추가한다.
+        this.setState('FORMATION_SETUP');
+        const startButton = document.createElement('button');
+        startButton.textContent = '전투 시작!';
+        startButton.onclick = () => {
+            this.setState('COMBAT');
+            const origin = { x: this.gameState.player.x, y: this.gameState.player.y };
+            const entityMap = { [this.gameState.player.id]: this.gameState.player };
+            this.mercenaryManager.mercenaries.forEach(m => { entityMap[m.id] = m; });
+            this.formationManager.apply(origin, entityMap, this.squadManager);
+        };
+        document.body.appendChild(startButton);
+
         this.setupEventListeners(assets, canvas);
 
         this.gameLoop = new GameLoop(this.update, this.render);
@@ -629,6 +757,35 @@ export class Game {
     setupEventListeners(assets, canvas) {
         const { eventManager, combatCalculator, monsterManager, mercenaryManager, mapManager, metaAIManager, pathfindingManager } = this;
         const gameState = this.gameState;
+
+        // 월드맵과 전투 상태 전환 이벤트 처리
+        eventManager.subscribe('start_combat', (data) => {
+            console.log(`전투 준비! 상대 부대 규모: ${data.monsterParty.troopSize}`);
+            this.setState('FORMATION_SETUP');
+            gameState.currentState = 'FORMATION_SETUP';
+            this.pendingMonsterParty = data.monsterParty;
+            this.uiManager.showPanel('squad-management-ui');
+            this.worldEngine.monsters.forEach(m => m.isActive = false);
+        });
+
+        eventManager.subscribe('formation_confirmed', () => {
+            const origin = { x: gameState.player.x, y: gameState.player.y };
+            const entityMap = { [gameState.player.id]: gameState.player };
+            this.mercenaryManager.mercenaries.forEach(m => { entityMap[m.id] = m; });
+            this.formationManager.apply(origin, entityMap);
+            this.setState('COMBAT');
+            gameState.currentState = 'COMBAT';
+        });
+
+        eventManager.subscribe('end_combat', (result) => {
+            console.log(`전투 종료! 결과: ${result.outcome}`);
+            this.setState('IDLE');
+            gameState.currentState = 'WORLD';
+            if (result.outcome === 'victory') {
+                this.worldEngine.monsters = this.worldEngine.monsters.filter(m => m.isActive === false);
+            }
+            this.worldEngine.monsters.forEach(m => m.isActive = true);
+        });
 
         // 공격 이벤트 처리
         eventManager.subscribe('entity_attack', (data) => {
@@ -699,6 +856,17 @@ export class Game {
             }
         });
 
+        // 평판 시스템을 위한 몬스터 처치 이벤트
+        eventManager.subscribe('monster_defeated', (data) => {
+            if (!this.reputationManager) return;
+            const action = {
+                type: 'combat',
+                outcome: 'victory',
+                enemy: data.monster.type
+            };
+            this.reputationManager.handleGameEvent(action);
+        });
+
         // 죽음 이벤트가 발생하면 경험치 획득 및 애니메이션을 시작
         eventManager.subscribe('entity_death', (data) => {
             const { attacker, victim } = data;
@@ -709,6 +877,7 @@ export class Game {
             eventManager.publish('log', { message: `${victim.constructor.name}가 쓰러졌습니다.`, color: 'red' });
 
             if (victim.unitType === 'monster') {
+                this.eventManager.publish('monster_defeated', { monster: victim, attacker });
                 const dropPool = [];
                 if (victim.consumables) dropPool.push(...victim.consumables);
                 if (victim.equipment) {
@@ -812,6 +981,16 @@ export class Game {
                     ...data
                 };
                 armorBreakWorkflow(context);
+            }
+        });
+
+        // 미시세계 판정 결과 텍스트 및 추가 연출
+        eventManager.subscribe('micro_world_event', ({ type, entity }) => {
+            if (!entity) return;
+            if (type === 'disarm') {
+                this.vfxManager.showEventText('[무장해제!]');
+            } else if (type === 'armor_break') {
+                this.vfxManager.showEventText('[방어구 파괴!]');
             }
         });
 
@@ -933,8 +1112,30 @@ export class Game {
                     lifespan: 70
                 });
             }
+            // 4. 파이어 노바
+            else if (skill.id === SKILLS.fire_nova.id) {
+                const centerX = caster.x + caster.width / 2;
+                const centerY = caster.y + caster.height / 2;
+                const radius = skill.effect?.radius || 192;
 
-            // 4. 그 외 공격 스킬 (기존 로직 유지)
+                this.vfxManager.createNovaEffect(caster, {
+                    radius,
+                    duration: skill.vfx?.duration || 50,
+                    image: skill.vfx?.image || 'fire-nova-effect'
+                });
+
+                const enemies = caster.isFriendly ? monsterManager.monsters : [gameState.player, ...mercenaryManager.mercenaries];
+                const aoeTargets = findEntitiesInRadius(centerX, centerY, radius, enemies, caster);
+
+                aoeTargets.forEach(enemy => {
+                    eventManager.publish('entity_attack', { attacker: caster, defender: enemy, skill });
+                    if (skill.effect?.applies?.type === 'burn') {
+                        this.effectManager.addEffect(enemy, 'burn');
+                    }
+                });
+            }
+
+            // 5. 그 외 공격 스킬 (기존 로직 유지)
             else if (skill.tags.includes('attack')) {
                 const range = skill.range || Infinity;
                 const nearestEnemy = this.findNearestEnemy(caster, monsterManager.monsters, range);
@@ -991,6 +1192,17 @@ export class Game {
             data.entity.stats.recalculate();
         });
 
+        // 인벤토리 업데이트 시 UI를 새로 고칩니다.
+        eventManager.subscribe('inventory_updated', ({ involvedEntityIds }) => {
+            console.log('Refreshing UI due to inventory update');
+            this.uiManager.renderSharedInventory();
+            involvedEntityIds.forEach(id => {
+                this.uiManager.updateCharacterSheet(id);
+                const ent = this.entityManager.getEntityById(id);
+                if (ent) this.eventManager.publish('stats_changed', { entity: ent });
+            });
+        });
+
         eventManager.subscribe('key_pressed', (data) => {
             const key = data.key;
             if (gameState.isPaused || gameState.isGameOver) return;
@@ -1041,8 +1253,13 @@ export class Game {
                 } else if (item.tags.includes('pet') || item.type === 'pet') {
                     this.petManager.equip(gameState.player, item, 'fox');
                 } else {
-                    // 무기를 포함한 모든 장비는 장착 대상 선택 UI를 사용합니다.
-                    this.uiManager._showEquipTargetPanel(item, gameState);
+                    const slot = this.inventoryManager.engine.getPreferredSlot(item);
+                    if (slot) {
+                        this.inventoryManager.engine.moveItem(
+                            { entity: gameState.player, slot: 'inventory', index: itemIndex },
+                            { entity: gameState.player, slot, index: 0 }
+                        );
+                    }
                 }
                 this.uiManager.renderInventory(gameState);
             },
@@ -1066,10 +1283,17 @@ export class Game {
                 this.uiManager.updateUI(gameState);
             },
             onEquipItem: (entity, item) => {
-                const targetInventory = entity.isPlayer ? gameState.inventory : (entity.consumables || entity.inventory || gameState.inventory);
-                this.equipmentManager.equip(entity, item, targetInventory);
-                gameState.inventory = gameState.inventory.filter(i => i !== item);
+                const fromIdx = gameState.inventory.indexOf(item);
+                if (fromIdx === -1) return;
+                const slot = this.inventoryManager.engine.getPreferredSlot(item);
+                if (!slot) return;
+                this.inventoryManager.engine.moveItem(
+                    { entity: gameState.player, slot: 'inventory', index: fromIdx },
+                    { entity, slot, index: 0 }
+                );
                 this.uiManager.renderInventory(gameState);
+                const panel = this.uiManager.openCharacterSheets.get(entity.id);
+                if (panel) this.uiManager.renderCharacterSheet(entity, panel);
             }
         });
 
@@ -1097,10 +1321,9 @@ export class Game {
             );
 
             if (clickedMerc) {
-                if (this.uiManager.showMercenaryDetail) {
-                    this.uiManager.showMercenaryDetail(clickedMerc);
-                    if (this.uiManager.mercDetailPanel)
-                        this.gameState.isPaused = true;
+                if (this.mercenaryManager.showMercenaryDetail) {
+                    this.mercenaryManager.showMercenaryDetail(clickedMerc);
+                    this.gameState.isPaused = true;
                 }
                 return; // 용병을 클릭했으면 더 이상 진행 안 함
             }
@@ -1117,6 +1340,31 @@ export class Game {
                 }
                 return;
             }
+        });
+
+        const weatherLayer = this.layerManager.layers.weather;
+        weatherLayer.addEventListener('mousedown', (e) => {
+            if (this.gameState.currentState === 'WORLD') {
+                this.worldEngine.startDrag(e.clientX, e.clientY);
+            } else if (this.gameState.currentState === 'COMBAT') {
+                this.startDragCamera(e.clientX, e.clientY);
+            }
+        });
+        weatherLayer.addEventListener('mousemove', (e) => {
+            if (this.gameState.currentState === 'WORLD') {
+                this.worldEngine.drag(e.clientX, e.clientY);
+            } else if (this.gameState.currentState === 'COMBAT') {
+                this.dragCamera(e.clientX, e.clientY);
+            }
+        });
+        ['mouseup', 'mouseleave'].forEach(ev => {
+            weatherLayer.addEventListener(ev, () => {
+                if (this.gameState.currentState === 'WORLD') {
+                    this.worldEngine.endDrag();
+                } else if (this.gameState.currentState === 'COMBAT') {
+                    this.endDragCamera();
+                }
+            });
         });
     }
 
@@ -1136,6 +1384,10 @@ export class Game {
     }
 
     update = (deltaTime) => {
+        if (this.state !== 'COMBAT') return;
+
+        this.handleCameraReset();
+
         const { gameState, mercenaryManager, monsterManager, itemManager, mapManager, inputHandler, effectManager, turnManager, metaAIManager, eventManager, equipmentManager, pathfindingManager, microEngine, microItemAIManager } = this;
         if (gameState.isPaused || gameState.isGameOver) return;
 
@@ -1225,6 +1477,7 @@ export class Game {
             monsterManager,
             mercenaryManager,
             pathfindingManager,
+            laneManager: this.laneManager,
             motionManager: this.motionManager,
             movementManager: this.movementManager,
             projectileManager: this.projectileManager,
@@ -1239,10 +1492,11 @@ export class Game {
             playerGroup: this.playerGroup,
             monsterGroup: this.monsterGroup,
             speechBubbleManager: this.speechBubbleManager,
+            statusEffectsManager: this.statusEffectsManager,
             enemies: metaAIManager.groups['dungeon_monsters']?.members || []
         };
         metaAIManager.update(context);
-        this.possessionAIManager.update(context);
+        if (this.possessionAIManager) this.possessionAIManager.update(context);
         this.itemAIManager.update(context);
         this.projectileManager.update(allEntities);
         this.vfxManager.update();
@@ -1267,6 +1521,17 @@ export class Game {
 
         layerManager.clear();
 
+        if (gameState.currentState === 'WORLD') {
+            this.worldEngine.render(layerManager.contexts.entity);
+            if (this.uiManager) this.uiManager.updateUI(gameState);
+            return;
+        } else if (gameState.currentState === 'FORMATION_SETUP') {
+            if (this.uiManager) this.uiManager.updateUI(gameState);
+            return;
+        } else if (gameState.currentState !== 'COMBAT') {
+            return;
+        }
+
         const camera = gameState.camera;
         let zoom = gameState.zoomLevel;
 
@@ -1281,13 +1546,18 @@ export class Game {
             const targetZoom = this.cinematicManager.targetZoom;
             zoom += (targetZoom - zoom) * 0.08;
         } else {
-            const cameraTarget = gameState.player;
-            const targetCameraX = cameraTarget.x - canvas.width / (2 * zoom);
-            const targetCameraY = cameraTarget.y - canvas.height / (2 * zoom);
             const mapPixelWidth = mapManager.width * mapManager.tileSize;
             const mapPixelHeight = mapManager.height * mapManager.tileSize;
-            camera.x = Math.max(0, Math.min(targetCameraX, mapPixelWidth - canvas.width / zoom));
-            camera.y = Math.max(0, Math.min(targetCameraY, mapPixelHeight - canvas.height / zoom));
+            if (this.cameraDrag.followPlayer) {
+                const cameraTarget = gameState.player;
+                const targetCameraX = cameraTarget.x - canvas.width / (2 * zoom);
+                const targetCameraY = cameraTarget.y - canvas.height / (2 * zoom);
+                camera.x = Math.max(0, Math.min(targetCameraX, mapPixelWidth - canvas.width / zoom));
+                camera.y = Math.max(0, Math.min(targetCameraY, mapPixelHeight - canvas.height / zoom));
+            } else {
+                camera.x = Math.max(0, Math.min(camera.x, mapPixelWidth - canvas.width / zoom));
+                camera.y = Math.max(0, Math.min(camera.y, mapPixelHeight - canvas.height / zoom));
+            }
         }
         gameState.zoomLevel = zoom;
 
@@ -1303,6 +1573,7 @@ export class Game {
         const contexts = layerManager.contexts;
 
         mapManager.render(contexts.mapBase, contexts.mapDecor, assets);
+        this.laneRenderManager.render(contexts.mapDecor);
         itemManager.render(contexts.mapDecor);
 
         // buffManager.renderGroundAuras(contexts.groundFx, ...); // (미래 구멍)
@@ -1344,11 +1615,49 @@ export class Game {
             }
         }
 
-        uiManager.updateUI(gameState);
+        if (this.uiManager && this.gameState.currentState === 'COMBAT') {
+            uiManager.updateUI(gameState);
+        }
     }
 
     handleAttack(attacker, defender, skill = null) {
         this.eventManager.publish('entity_attack', { attacker, defender, skill });
+    }
+
+    startDragCamera(screenX, screenY) {
+        const { cameraDrag, gameState } = this;
+        cameraDrag.isDragging = true;
+        cameraDrag.followPlayer = false;
+        cameraDrag.dragStart.x = screenX;
+        cameraDrag.dragStart.y = screenY;
+        cameraDrag.cameraStart.x = gameState.camera.x;
+        cameraDrag.cameraStart.y = gameState.camera.y;
+    }
+
+    dragCamera(screenX, screenY) {
+        const { cameraDrag, gameState, layerManager, mapManager } = this;
+        if (!cameraDrag.isDragging) return;
+        const zoom = gameState.zoomLevel || 1;
+        const deltaX = (screenX - cameraDrag.dragStart.x) / zoom;
+        const deltaY = (screenY - cameraDrag.dragStart.y) / zoom;
+        gameState.camera.x = cameraDrag.cameraStart.x - deltaX;
+        gameState.camera.y = cameraDrag.cameraStart.y - deltaY;
+        const canvas = layerManager.layers.mapBase;
+        const mapPixelWidth = mapManager.width * mapManager.tileSize;
+        const mapPixelHeight = mapManager.height * mapManager.tileSize;
+        gameState.camera.x = Math.max(0, Math.min(gameState.camera.x, mapPixelWidth - canvas.width / zoom));
+        gameState.camera.y = Math.max(0, Math.min(gameState.camera.y, mapPixelHeight - canvas.height / zoom));
+    }
+
+    endDragCamera() {
+        this.cameraDrag.isDragging = false;
+    }
+
+    handleCameraReset() {
+        if (!this.cameraDrag.followPlayer && Object.keys(this.inputHandler.keysPressed).length > 0) {
+            this.cameraDrag.followPlayer = true;
+            this.cameraDrag.isDragging = false;
+        }
     }
 
 
@@ -1400,6 +1709,19 @@ export class Game {
             this.gameState.player.stats.allocatePoint(stat);
             this.gameState.player.stats.recalculate();
         }
+    }
+
+    setState(newState) {
+        if (this.state === newState) return;
+        this.state = newState;
+        console.log(`Game state changed to: ${newState}`);
+        if (this.eventManager) {
+            this.eventManager.publish('game_state_changed', newState);
+        }
+    }
+
+    getFriendlyEntities() {
+        return [this.gameState.player, ...this.mercenaryManager.mercenaries];
     }
 
     startBGM() {

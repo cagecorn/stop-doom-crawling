@@ -118,6 +118,24 @@ body, html {
     margin-bottom: 5px;
 }
 
+.strategy-controls {
+    display: inline-flex;
+    margin-left: 10px;
+}
+
+.strategy-controls button {
+    padding: 2px 8px;
+    border: 1px solid #ccc;
+    cursor: pointer;
+    background-color: #555;
+    color: white;
+}
+
+.strategy-controls button.active {
+    background-color: #e67e22;
+    border-color: #d35400;
+}
+
 .hp-bar-container {
     width: 100%;
     height: 15px;
@@ -259,13 +277,19 @@ body, html {
 }
 
 .modal-panel.wide {
-    width: 60vw;
-    max-width: 800px;
+    width: 80vw;
+    max-width: 1000px;
 }
 
 .inventory-container {
     display: flex;
     gap: 20px;
+}
+
+.inventory-grid {
+    display: grid;
+    gap: 5px;
+    padding: 5px;
 }
 
 .inventory-left {
@@ -303,7 +327,7 @@ body, html {
 
 #inventory-list {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(48px, 1fr));
+    grid-template-columns: repeat(8, 48px);
     gap: 8px;
     padding: 8px;
     background-color: rgba(0,0,0,0.3);
@@ -362,10 +386,13 @@ body, html {
 .sheet-container { display: flex; gap: 15px; }
 .sheet-left { flex-basis: 300px; flex-shrink: 0; }
 .sheet-right { flex-grow: 1; }
-
-#equipment-target-panel {
-    z-index: 250;
+#reputation-history-panel {
+    margin-top: 10px;
+    max-height: 120px;
+    overflow-y: auto;
+    font-size: 12px;
 }
+
 
 #sheet-equipment .equip-slot {
     display: flex; justify-content: space-between; align-items: center;
@@ -416,6 +443,12 @@ body, html {
     padding: 5px 0;
 }
 
+#sheet-skills {
+    display: flex;
+    gap: 5px;
+    padding: 5px 0;
+}
+
 .proficiency-list { display: flex; flex-direction: column; gap: 8px; }
 .proficiency-line { display: grid; grid-template-columns: 80px 50px 1fr; align-items: center; font-size: 12px; }
 .prof-name { font-weight: bold; }
@@ -434,3 +467,119 @@ body, html {
 .menu-btn:last-child {
     margin-right: 0;
 }
+
+/* Draggable window styling */
+.window {
+    position: absolute;
+    z-index: 100;
+    box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+}
+
+.window-header {
+    padding: 10px;
+    background-color: #333;
+    color: white;
+    cursor: grab;
+}
+/* Drag & Drop inventory slots */
+.slot {
+    width: 64px;
+    height: 64px;
+    border: 1px solid #555;
+    background-color: #222;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+.slot.drag-over {
+    background-color: #444;
+    border-color: #fff;
+}
+.slot img {
+    max-width: 100%;
+    max-height: 100%;
+    cursor: grab;
+}
+.slot img.dragging {
+    opacity: 0.5;
+}
+
+/* Squad management */
+.squad-panel {
+    border: 1px solid #555;
+    padding: 4px;
+    margin: 4px;
+    min-height: 64px;
+    background-color: rgba(0,0,0,0.3);
+}
+
+.merc-portrait {
+    width: 32px;
+    height: 32px;
+    border: 1px solid #333;
+    margin: 2px;
+    background-color: #222;
+    color: #eee;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+}
+
+
+.formation-grid {
+    display: grid;
+    /* 5x5 grid with larger cells */
+    grid-template-columns: repeat(5, 80px);
+    grid-template-rows: repeat(5, 80px);
+    gap: 8px;
+    margin-top: 15px;
+    padding: 10px;
+    background-color: rgba(0,0,0,0.2);
+    border-radius: 5px;
+}
+
+.formation-cell {
+    border: 1px solid #777;
+    width: 80px;
+    height: 80px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: rgba(0,0,0,0.4);
+    font-size: 14px;
+    color: #ccc;
+}
+/* style.css 파일 */
+
+/* 기존에 있던 다른 CSS 코드들... */
+body {
+    font-family: sans-serif;
+}
+
+/* ======================================= */
+/* 아래에 새로운 UI 스타일 코드를 전부 추가하세요! */
+/* ======================================= */
+
+#ui-container {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    display: flex;
+    gap: 20px;
+}
+
+#squad-management, #formation-grid {
+    border: 1px solid #ccc;
+    padding: 10px;
+    background-color: rgba(255, 255, 255, 0.8);
+}
+
+.droppable {
+    padding: 10px;
+    border: 2px dashed #ccc;
+    min-height: 50px;
+    margin-top: 5px;
+}
+
+/* ... (나머지 CSS 코드 전체) ... */

@@ -2,6 +2,7 @@
 
 import { hasLineOfSight } from './utils/geometry.js';
 import { SKILLS } from './data/skills.js';
+import { SETTINGS } from '../config/gameSettings.js';
 
 // AI 내에서 직접 팝업을 호출하지 않고 이벤트만 발생시켜
 // 시각 효과 로직과 분리한다.  실제 팝업 처리는 game.js가 담당한다.
@@ -132,6 +133,7 @@ export class AIArchetype {
      * @returns {{x:number,y:number}}
      */
     _applyMbtiInfluence(self, pos, allies, base = 32) {
+        if (!SETTINGS.ENABLE_MBTI_INFLUENCE) return pos;
         const myLetter = self?.properties?.mbti?.charAt(0);
         if (!myLetter) return pos;
 
@@ -1080,5 +1082,48 @@ export class ArcherAI extends AIArchetype {
 
         // 스킬이 없거나 사거리가 맞지 않으면 기본 AI가 처리
         return { type: 'idle' };
+    }
+}
+
+// --- 불의 신 전용 AI ---
+export class FireGodAI extends AIArchetype {
+    constructor() {
+        super();
+        this.melee = new MeleeAI();
+    }
+
+    decideAction(self, context) {
+        const { enemies } = context;
+        const nearEnemy = (enemies || []).find(e =>
+            Math.hypot(e.x - self.x, e.y - self.y) <= self.attackRange * 1.5);
+        const fireNova = this._findReadySkill(self, s => s.id === SKILLS.fire_nova.id);
+        if (fireNova && nearEnemy) {
+            return { type: 'skill', target: nearEnemy, skillId: SKILLS.fire_nova.id };
+        }
+        // 역할 AI에서 추가 행동이 없으면 무기 AI나 기본 AI가 처리하도록 함
+        return { type: 'idle' };
+    }
+}
+
+// --- Player controlled auto-battle AI ---
+export class PlayerCombatAI extends AIArchetype {
+    constructor() {
+        super();
+        this.currentAI = null;
+    }
+
+    updateBaseAI(entity) {
+        const tags = Array.isArray(entity.equipment.weapon?.tags)
+            ? entity.equipment.weapon.tags
+            : [];
+        const desired = tags.includes('ranged') ? RangedAI : MeleeAI;
+        if (!(this.currentAI instanceof desired)) {
+            this.currentAI = new desired();
+        }
+    }
+
+    decideAction(self, context) {
+        if (!this.currentAI) this.updateBaseAI(self);
+        return this.currentAI.decideAction(self, context);
     }
 }

@@ -168,6 +168,25 @@ export const ITEMS = {
         toughness: 5,
     },
 
+    eager_sword: {
+        name: '열망의 검',
+        type: 'weapon',
+        damageDice: '1d6',
+        tags: ['melee', 'sword'],
+        aspiration: {
+            personality: 'standard',
+            current: 90,
+            max: 100,
+            state: 'inspired',
+        },
+        imageKey: 'sword',
+        stats: { attackPower: 2 },
+        tier: 'rare',
+        durability: 90,
+        weight: 9,
+        toughness: 5,
+    },
+
     estoc: {
         name: '에스톡',
         type: 'weapon',
@@ -276,6 +295,30 @@ export const ITEMS = {
         imageKey: 'dagger', stats: { attackSpeed: 0.3 },
         tier: 'normal', durability: 80, weight: 3, toughness: 2
     },
+    stun_baton: {
+        name: '스턴 바톤', type: 'weapon', damageDice: '1d6',
+        tags: ['melee', 'mace', 'electric'],
+        aspiration: {
+            personality: 'standard',
+            current: 50,
+            max: 100,
+            state: 'stable',
+        },
+        imageKey: 'mace', stats: { attackPower: 4 },
+        tier: 'normal', durability: 120, weight: 7, toughness: 4
+    },
+    flail: {
+        name: '플레일', type: 'weapon', damageDice: '1d8',
+        tags: ['melee', 'flail'],
+        aspiration: {
+            personality: 'standard',
+            current: 50,
+            max: 100,
+            state: 'stable',
+        },
+        imageKey: 'mace', stats: { attackPower: 5, attackRange: 192 },
+        tier: 'normal', durability: 100, weight: 8, toughness: 4
+    },
     // --- 여기까지 ---
 
     // Parasite samples
@@ -318,6 +361,14 @@ export const ITEMS = {
         tags: ['consumable', 'buff_item'],
         imageKey: 'potion',
         effectId: 'strength_buff'
+    },
+
+    shock_grenade: {
+        name: '쇼크 그레네이드',
+        type: 'consumable',
+        tags: ['consumable', 'attack_item'],
+        imageKey: 'potion',
+        effectId: 'shock'
     },
 
     // --- 룬 아이템 ---

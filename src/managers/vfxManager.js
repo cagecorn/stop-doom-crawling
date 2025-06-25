@@ -189,6 +189,29 @@ export class VFXManager {
         this.particleEngine.createWhipTrail(fromX, fromY, toX, toY);
     }
 
+    createNovaEffect(caster, options) {
+        const {
+            duration = 50,
+            radius = 100,
+            color = 'rgba(255, 255, 0, 0.7)',
+            image = null
+        } = options || {};
+
+        const effectImage = image ? (this.game?.assets?.[image] || null) : null;
+
+        const effect = {
+            type: 'nova',
+            x: caster.x + caster.width / 2,
+            y: caster.y + caster.height / 2,
+            maxRadius: radius,
+            duration,
+            life: duration,
+            color,
+            image: effectImage,
+        };
+        this.effects.push(effect);
+    }
+
     /**
      * 아이템이 시체 위치에서 포물선을 그리며 튀어나오는 애니메이션을 추가합니다.
      * 애니메이션이 종료되면 ItemManager에 아이템을 정식으로 추가합니다.
@@ -284,6 +307,33 @@ export class VFXManager {
         this.textPopupEngine.add(text, target, options);
     }
 
+    /**
+     * 화면 중앙 상단에 큰 이벤트 텍스트를 표시합니다.
+     * 주로 미시세계 판정 결과 등을 강조할 때 사용합니다.
+     * @param {string} text
+     * @param {number} [duration=120] 프레임 단위 지속 시간
+     */
+    showEventText(text, duration = 120) {
+        if (!this.game || !this.game.layerManager) return;
+        const layer = this.game.layerManager.layers.vfx;
+        const popup = {
+            text,
+            x: layer.width / 2,
+            y: layer.height / 3,
+            duration,
+            life: duration,
+            font: 'bold 64px Arial',
+            fillStyle: 'gold',
+            strokeStyle: 'black',
+            lineWidth: 4,
+            alignment: 'center',
+            isUI: true,
+            vy: -0.5,
+            alpha: 1.0
+        };
+        this.textPopupEngine.popups.push(popup);
+    }
+
     addCinematicText(text, duration = 2000) {
         const frames = Math.round(duration / 16.67);
         const centerX = this.game.layerManager.layers.vfx.width / 2;
@@ -307,6 +357,29 @@ export class VFXManager {
         };
 
         this.textPopupEngine.popups.push(textEffect);
+    }
+
+    /**
+     * 유닛이 들고 있는 무기가 화면 밖으로 날아가는 애니메이션을 실행합니다.
+     * 기존 addEjectAnimation을 간편하게 감싸는 헬퍼입니다.
+     * @param {object} entity 무기를 가진 엔티티
+     */
+    playWeaponFlyAway(entity) {
+        const weapon = entity?.equipment?.weapon;
+        if (!weapon) return;
+        const angle = Math.random() * Math.PI * 2;
+        const distance = 100 + Math.random() * 50;
+        this.addEjectAnimation(weapon, { x: entity.x, y: entity.y }, angle, distance);
+    }
+
+    /**
+     * 방어구 파괴 효과를 재생합니다. 내부적으로 addArmorBreakAnimation을 호출합니다.
+     * @param {object} entity 방어구를 착용한 엔티티
+     */
+    playArmorBreak(entity) {
+        const armor = entity?.equipment?.armor;
+        if (!armor) return;
+        this.addArmorBreakAnimation(armor, entity);
     }
 
     /**
@@ -509,6 +582,14 @@ export class VFXManager {
                 continue;
             }
 
+            if (effect.type === 'nova') {
+                effect.life--;
+                if (effect.life <= 0) {
+                    this.effects.splice(i, 1);
+                }
+                continue;
+            }
+
             if (effect.type === 'death_animation') {
                 effect.life--;
                 if (effect.life <= 0) {
@@ -677,6 +758,22 @@ export class VFXManager {
                 ctx.lineWidth = effect.lineWidth * (effect.life / effect.duration);
                 ctx.globalAlpha = effect.life / effect.duration;
                 ctx.stroke();
+                ctx.restore();
+            } else if (effect.type === 'nova') {
+                const progress = 1 - effect.life / effect.duration;
+                const currentRadius = effect.maxRadius * progress;
+                const alpha = effect.life / effect.duration;
+                ctx.save();
+                ctx.globalAlpha = alpha;
+                if (effect.image) {
+                    const d = currentRadius * 2;
+                    ctx.drawImage(effect.image, effect.x - currentRadius, effect.y - currentRadius, d, d);
+                } else {
+                    ctx.beginPath();
+                    ctx.arc(effect.x, effect.y, currentRadius, 0, Math.PI * 2);
+                    ctx.fillStyle = effect.color;
+                    ctx.fill();
+                }
                 ctx.restore();
             } else if (effect.type === 'item_pop') {
                 const { item, startPos, endPos, life, duration, popHeight } = effect;
